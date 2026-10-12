@@ -172,3 +172,44 @@ def test_bad_tenant_and_non_json_responses(tmp_path: Path) -> None:
         )
         with pytest.raises(FabricError, match="not JSON"):
             Fabric("tok", settings).list_workspaces()
+
+
+def test_invoked_pipelines_deploy_first_and_schedules_are_not_duplicated(
+    assessment: dict[str, Any], tmp_path: Path
+) -> None:
+    assessment = json.loads(json.dumps(assessment))
+    nightly = next(a for a in assessment["assets"] if a["type"] == "Job")
+    nightly["meta"]["job_id"] = 7
+    # listed first, but it invokes nightly_sales, so it must deploy after it
+    assessment["assets"].insert(
+        0,
+        {
+            "type": "Job",
+            "name": "master",
+            "location": "job:8",
+            "meta": {
+                "job_id": 8,
+                "settings": {"tasks": [{"task_key": "run", "run_job_task": {"job_id": 7}}]},
+            },
+        },
+    )
+    settings = make_settings(tmp_path)
+    out, cfg = converted(assessment, tmp_path)
+    items = {i["id"]: i for i in load_ledger(out)["items"]}
+    assert items["Job:master"]["outcome"] == TEST
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeFabric(router)
+        fake.items.append({"id": "nb-notify", "type": "Notebook", "displayName": "notify"})
+        deploy(out, cfg, Fabric("tok", settings), "ws-1", only=["notebook", "pipeline"])
+        child, master = (
+            fake.item("DataPipeline", "pl_nightly_sales"),
+            fake.item("DataPipeline", "pl_master"),
+        )
+        assert child and master
+        pipe = json.loads(base64.b64decode(fake.definitions[master["id"]]["parts"][0]["payload"]))
+        act = pipe["properties"]["activities"][0]
+        assert act["type"] == "ExecutePipeline"
+        assert act["typeProperties"]["pipeline"]["referenceName"] == child["id"]
+        n = len(fake.schedules)
+        deploy(out, cfg, Fabric("tok", settings), "ws-1", only=["pipeline"])
+        assert len(fake.schedules) == n and any("schedule update" in c for c in fake.calls)

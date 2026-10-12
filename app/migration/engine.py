@@ -113,6 +113,28 @@ MANUAL_NOTES = {
 CONN_REASON = "adls_connection_id not set: create an ADLS Gen2 connection in Fabric and put its id in mapping.json (shortcut spec is ready)"
 
 
+def _job_refs(
+    items: list[dict[str, Any]], assets: dict[str, dict[str, Any]], cfg: dict[str, Any]
+) -> dict[str, str]:
+    """Databricks job id -> name of the Data Pipeline it becomes, for run_job_task references.
+
+    Only jobs that really produce a pipeline count; dropping one can empty a job that only ran
+    it, so this repeats until stable (ADR 0003: an addition beyond the reference tool).
+    """
+    jobs = {}
+    for it in items:
+        a = assets.get(it["id"])
+        if it["type"] == "Job" and a and a["meta"].get("job_id") is not None:
+            jobs[str(a["meta"]["job_id"])] = (it["target_name"], a)
+    refs = {jid: name for jid, (name, _) in jobs.items()}
+    for _ in range(len(refs) + 1):
+        live = {jid: n for jid, n in refs.items() if convert_job(jobs[jid][1], cfg, refs)[0]}
+        if live == refs:
+            break
+        refs = live
+    return refs
+
+
 def tsql_type(t: str | None) -> str:
     t = (t or "").lower().strip()
     m = re.match(r"decimal\((\d+),\s*(\d+)\)", t)
@@ -232,6 +254,7 @@ def convert_all(
         it["outcome"] = outcome
         it["reasons"].append(reason)
 
+    job_refs = _job_refs(items, assets, cfg)
     for it in items:
         a = assets.get(
             it["id"], {"type": it["type"], "name": it["name"], "meta": {}, "location": ""}
@@ -288,7 +311,7 @@ def convert_all(
                     )
                 it["deployment"] = "generated"
             elif it["type"] == "Job":
-                pipe, sched, notes, omitted = convert_job(a, cfg)
+                pipe, sched, notes, omitted = convert_job(a, cfg, job_refs)
                 if not pipe:
                     fail(it, "No notebook tasks to convert; " + "; ".join(omitted or ["empty job"]))
                     continue
@@ -307,9 +330,14 @@ def convert_all(
                     entry["schedule"] = str(sp)
                     it["actions"].append(f"schedule converted ({sched['configuration']['type']})")
                 art.append(entry)
+                kinds = [x["type"] for x in pipe["properties"]["activities"]]
                 it["actions"].append(
-                    f"{len(pipe['properties']['activities'])} notebook activities generated"
+                    f"{kinds.count('TridentNotebook')} notebook activities generated"
                 )
+                if len(kinds) > kinds.count("TridentNotebook"):
+                    it["actions"].append(
+                        f"{kinds.count('ExecutePipeline')} Execute Pipeline / {kinds.count('ForEach')} ForEach activities generated"
+                    )
                 it["reasons"] += notes + [f"Task not migrated - {o}" for o in omitted]
                 it["outcome"] = PART if omitted else TEST
                 it["tests"].append(TESTS["Data Pipeline"])

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta
 from typing import Any
 
 from app.conversion.common import nb_name
 
-__all__ = ["SKIP_TASK", "convert_job", "fab_timeout", "quartz_to_fabric"]
+__all__ = ["SKIP_TASK", "convert_job", "fab_timeout", "pipeline_refs", "quartz_to_fabric"]
 
 WIN_TZ = {
     "Asia/Kolkata": "India Standard Time",
@@ -101,56 +102,195 @@ SKIP_TASK = {
 }
 
 
+# Placeholder for another pipeline's item id, resolved at deploy (pipelines are deployed in
+# dependency order so the referenced one exists first).
+PL_REF = re.compile(r"@@PL:([^@]+)@@")
+_INPUT = re.compile(r"\{\{\s*input((?:\.\w+)*)\s*\}\}")
+
+
+def pipeline_refs(text: str) -> set[str]:
+    """Names of the pipelines a pipeline definition invokes (``@@PL:name@@``)."""
+    return set(PL_REF.findall(text))
+
+
+def _policy(t: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "timeout": fab_timeout(t.get("timeout_seconds")),
+        "retry": int(t.get("max_retries") or 0),
+        "retryIntervalInSeconds": max(
+            30, int((t.get("min_retry_interval_millis") or 30000) / 1000)
+        ),
+        "secureInput": False,
+        "secureOutput": False,
+    }
+
+
+def _activity(
+    name: str, dep: list[dict[str, Any]], t: dict[str, Any], body: dict[str, Any]
+) -> dict[str, Any]:
+    """Container/invoke activities take no timeout/retry policy (ForEach none at all)."""
+    act: dict[str, Any] = {"name": name, "type": body["type"], "dependsOn": dep}
+    if body["type"] == "TridentNotebook":
+        act["policy"] = _policy(t)
+    elif body["type"] == "ExecutePipeline":
+        act["policy"] = {"secureInput": False}
+    act["typeProperties"] = body["typeProperties"]
+    return act
+
+
+def _param(v: Any, loop: bool) -> dict[str, Any]:
+    """A notebook parameter; inside a ForEach ``{{input}}`` / ``{{input.key}}`` -> ``@{item()...}``."""
+    text = str(v)
+    if loop and _INPUT.search(text):
+        return {
+            "value": {
+                "value": _INPUT.sub(lambda m: "@{item()" + m.group(1) + "}", text),
+                "type": "Expression",
+            },
+            "type": "string",
+        }
+    return {"value": text, "type": "string"}
+
+
+def _notebook_props(nt: dict[str, Any], loop: bool = False) -> dict[str, Any]:
+    tp: dict[str, Any] = {
+        "notebookId": f"@@NB:{nb_name(nt.get('notebook_path', ''))}@@",
+        "workspaceId": "@@WS@@",
+    }
+    if nt.get("base_parameters"):
+        tp["parameters"] = {pk: _param(pv, loop) for pk, pv in nt["base_parameters"].items()}
+    return tp
+
+
+def _run_job_activity(
+    t: dict[str, Any], job_refs: dict[str, str], loop: bool = False
+) -> dict[str, Any] | None:
+    """run_job_task -> ExecutePipeline on the migrated pipeline of that job (if it is migrated)."""
+    rj = t["run_job_task"]
+    target = job_refs.get(str(rj.get("job_id")))
+    if not target:
+        return None
+    params = {**(rj.get("notebook_params") or {}), **(rj.get("job_parameters") or {})}
+    tp: dict[str, Any] = {
+        "pipeline": {"referenceName": f"@@PL:{target}@@", "type": "PipelineReference"},
+        "waitOnCompletion": True,
+    }
+    if params:
+        tp["parameters"] = {k: (_param(v, loop)["value"]) for k, v in params.items()}
+    return {"type": "ExecutePipeline", "typeProperties": tp}
+
+
+def _json_items(inputs: Any) -> str | None:
+    """for_each_task inputs as a pipeline expression; only literal JSON arrays are convertible."""
+    if isinstance(inputs, list):
+        arr = inputs
+    else:
+        try:
+            arr = json.loads(str(inputs))
+        except ValueError:
+            return None
+    if not isinstance(arr, list):
+        return None
+    return "@json('" + json.dumps(arr).replace("'", "''") + "')"
+
+
+def _extended_activity(
+    t: dict[str, Any], job_refs: dict[str, str]
+) -> tuple[dict[str, Any] | None, str]:
+    """run_job_task / for_each_task -> activity body (no name/dependsOn), or the reason it is omitted."""
+    if "run_job_task" in t:
+        act = _run_job_activity(t, job_refs)
+        if act:
+            return act, ""
+        return None, (
+            f"Run Job task: job {t['run_job_task'].get('job_id')} is not part of this migration; "
+            "migrate it too (it becomes an Execute Pipeline activity) or wire the activity manually"
+        )
+    fe = t["for_each_task"]
+    items = _json_items(fe.get("inputs"))
+    if items is None:
+        return (
+            None,
+            "For-each task: inputs are not a literal JSON array; add a ForEach activity manually",
+        )
+    inner = fe.get("task") or {}
+    if "notebook_task" in inner:
+        body: dict[str, Any] | None = {
+            "type": "TridentNotebook",
+            "typeProperties": _notebook_props(inner["notebook_task"], loop=True),
+        }
+    elif "run_job_task" in inner:
+        body = _run_job_activity(inner, job_refs, loop=True)
+    else:
+        body = None
+    if body is None:
+        return (
+            None,
+            "For-each task: the nested task is not a notebook or migrated job; add a ForEach activity manually",
+        )
+    conc = int(fe.get("concurrency") or 1)
+    inner_act = _activity(inner.get("task_key") or f"{t['task_key']}_iteration", [], inner, body)
+    return {
+        "type": "ForEach",
+        "typeProperties": {
+            "items": {"value": items, "type": "Expression"},
+            "isSequential": conc <= 1,
+            **({"batchCount": min(conc, 50)} if conc > 1 else {}),
+            "activities": [inner_act],
+        },
+    }, ""
+
+
 def convert_job(
-    a: dict[str, Any], cfg: dict[str, Any]
+    a: dict[str, Any], cfg: dict[str, Any], job_refs: dict[str, str] | None = None
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[str], list[str]]:
-    """Notebook tasks become TridentNotebook activities; other task types are reported as omitted."""
+    """Notebook tasks become TridentNotebook activities; other task types are reported as omitted.
+
+    ``job_refs`` (job id -> migrated pipeline name) turns on the service's extensions (ADR 0003):
+    run_job_task -> ExecutePipeline and for_each_task over a literal list -> ForEach. Without it
+    the result is exactly the reference tool's.
+    """
     s = a["meta"].get("settings", {})
     acts: list[dict[str, Any]] = []
     kept: set[str] = set()
     notes: list[str] = []
     omitted: list[str] = []
     tasks = s.get("tasks", [])
+    extended: dict[str, dict[str, Any]] = {}
+    skipped: dict[str, str] = {}
     for t in tasks:
         if "notebook_task" in t:
             kept.add(t["task_key"])
+        elif job_refs is not None and ("run_job_task" in t or "for_each_task" in t):
+            act, why = _extended_activity(t, job_refs)
+            if act:
+                kept.add(t["task_key"])
+                extended[t["task_key"]] = act
+            else:
+                skipped[t["task_key"]] = why
     for t in tasks:
         k = t["task_key"]
         if k not in kept:
             kind = next((x for x in SKIP_TASK if x in t), "unknown")
-            omitted.append(f"{k}: {SKIP_TASK.get(kind, 'unsupported task type')}")
+            omitted.append(f"{k}: {skipped.get(k) or SKIP_TASK.get(kind, 'unsupported task type')}")
             continue
-        nt = t["notebook_task"]
         dep: list[str] = []
         lost: list[str] = []
         for d in t.get("depends_on", []):
             (dep if d["task_key"] in kept else lost).append(d["task_key"])
         if lost:
             notes.append(f"{k}: dependency on omitted task(s) {lost} was dropped")
-        tp: dict[str, Any] = {
-            "notebookId": f"@@NB:{nb_name(nt.get('notebook_path', ''))}@@",
-            "workspaceId": "@@WS@@",
+        body = extended.get(k) or {
+            "type": "TridentNotebook",
+            "typeProperties": _notebook_props(t["notebook_task"]),
         }
-        if nt.get("base_parameters"):
-            tp["parameters"] = {
-                pk: {"value": str(pv), "type": "string"} for pk, pv in nt["base_parameters"].items()
-            }
         acts.append(
-            {
-                "name": k,
-                "type": "TridentNotebook",
-                "dependsOn": [{"activity": d, "dependencyConditions": ["Succeeded"]} for d in dep],
-                "policy": {
-                    "timeout": fab_timeout(t.get("timeout_seconds")),
-                    "retry": int(t.get("max_retries") or 0),
-                    "retryIntervalInSeconds": max(
-                        30, int((t.get("min_retry_interval_millis") or 30000) / 1000)
-                    ),
-                    "secureInput": False,
-                    "secureOutput": False,
-                },
-                "typeProperties": tp,
-            }
+            _activity(
+                k,
+                [{"activity": d, "dependencyConditions": ["Succeeded"]} for d in dep],
+                t,
+                body,
+            )
         )
     pipe = (
         {

@@ -107,6 +107,15 @@ def preflight(out: str | Path, cfg: dict[str, Any]) -> list[tuple[str, str, str]
                             e["name"],
                             f"activity {a['name']} calls notebook '{x}' which is not part of this migration: it must already exist in the workspace",
                         )
+                for x in re.findall(r"@@PL:([^@]+)@@", json.dumps(a)):
+                    if x == e["name"]:
+                        add("error", e["name"], f"activity {a['name']} invokes its own pipeline")
+                    elif ("pipeline", x) not in names:
+                        add(
+                            "warn",
+                            e["name"],
+                            f"activity {a['name']} invokes pipeline '{x}' which is not part of this migration: it must already exist in the workspace",
+                        )
         elif e["kind"] == "shortcuts" and not cfg["adls_connection_id"]:
             add("warn", e["name"], "adls_connection_id is empty: shortcuts will not be created")
     blocked = sum(

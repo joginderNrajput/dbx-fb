@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.conversion.common import NOT, PART, TEST, load_json, save_json
+from app.conversion.jobs import pipeline_refs
 from app.core.exceptions import FabricError, ValidationFailed
 from app.core.logging import get_logger
 from app.fabric.client import Fabric, b64
@@ -155,18 +156,28 @@ def deploy(
                     it["deployment"] = "failed"
                     it["outcome"] = NOT
                     it["reasons"].append("Shortcut failed: " + ex.message)
-    for e in [x for x in arts if x["kind"] == "pipeline" and want("pipeline")]:
+    pipelines = _dependency_order(
+        out, [x for x in arts if x["kind"] == "pipeline" and want("pipeline")]
+    )
+    for e in pipelines:
         try:
             text = resolve(out, e["path"]).read_text("utf-8").replace("@@WS@@", ws)
-            for nm in set(re.findall(r"@@NB:([^@]+)@@", text)):
-                if "NB:" + nm not in ids:
-                    found = fab.find(ws, "Notebook", nm)
-                    if found:
-                        ids["NB:" + nm] = found
+            for kind, typ in (("NB", "Notebook"), ("PL", "DataPipeline")):
+                for nm in set(re.findall(rf"@@{kind}:([^@]+)@@", text)):
+                    if f"{kind}:{nm}" not in ids:
+                        found = fab.find(ws, typ, nm)
+                        if found:
+                            ids[f"{kind}:{nm}"] = found
             miss = [m for m in re.findall(r"@@NB:([^@]+)@@", text) if "NB:" + m not in ids]
             if miss:
                 raise FabricError(f"notebook(s) not deployed: {sorted(set(miss))}")
+            miss = [m for m in pipeline_refs(text) if "PL:" + m not in ids]
+            if miss:
+                raise FabricError(
+                    f"invoked pipeline(s) not deployed (or a reference cycle): {sorted(miss)}"
+                )
             text = re.sub(r"@@NB:([^@]+)@@", lambda m: ids["NB:" + m.group(1)], text)
+            text = re.sub(r"@@PL:([^@]+)@@", lambda m: ids["PL:" + m.group(1)], text)
             definition = {
                 "parts": [
                     {
@@ -179,18 +190,14 @@ def deploy(
             pid, how = fab.ensure(
                 ws, "dataPipelines", "DataPipeline", e["name"], definition=definition
             )
+            ids["PL:" + e["name"]] = pid
             for iid in e["items"]:
                 if iid in items:
                     items[iid]["target_id"] = pid
             msg = ""
             if e.get("schedule"):
                 try:
-                    fab.req(
-                        "POST",
-                        f"/workspaces/{ws}/items/{pid}/jobs/Pipeline/schedules",
-                        load_json(resolve(out, e["schedule"])),
-                    )
-                    msg = "schedule created"
+                    msg = _ensure_schedule(fab, ws, pid, load_json(resolve(out, e["schedule"])))
                 except FabricError as ex:
                     for iid in e["items"]:
                         items[iid]["reasons"].append("Schedule not created: " + ex.message)
@@ -202,6 +209,43 @@ def deploy(
     ledger["deployed"] = datetime.now().isoformat(timespec="seconds")
     save_json(out / "ledger.json", ledger)
     return ledger
+
+
+def _dependency_order(out: Path, pipes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Invoked pipelines first: an Execute Pipeline activity references the target's item id.
+
+    Pipelines in a reference cycle keep their original order and fail with a clear message."""
+    by_name = {e["name"]: e for e in pipes}
+    deps: dict[str, set[str]] = {}
+    for e in pipes:
+        try:
+            refs = pipeline_refs(resolve(out, e["path"]).read_text("utf-8"))
+        except (OSError, ValueError):
+            refs = set()
+        deps[e["name"]] = {r for r in refs if r in by_name and r != e["name"]}
+    ordered: list[dict[str, Any]] = []
+    done: set[str] = set()
+    while len(done) < len(pipes):
+        ready = [e for e in pipes if e["name"] not in done and deps[e["name"]] <= done]
+        if not ready:  # cycle
+            ready = [e for e in pipes if e["name"] not in done]
+        ordered += ready
+        done |= {e["name"] for e in ready}
+    return ordered
+
+
+def _ensure_schedule(fab: Fabric, ws: str, pid: str, schedule: dict[str, Any]) -> str:
+    """One schedule per migrated pipeline: a re-deploy updates it instead of adding another."""
+    base = f"/workspaces/{ws}/items/{pid}/jobs/Pipeline/schedules"
+    try:
+        existing = fab.list_paged(base)
+    except FabricError:
+        existing = []
+    if existing and existing[0].get("id"):
+        fab.req("PATCH", f"{base}/{existing[0]['id']}", schedule)
+        return "schedule updated"
+    fab.req("POST", base, schedule)
+    return "schedule created"
 
 
 def deploy_notebook(

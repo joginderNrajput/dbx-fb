@@ -53,6 +53,21 @@ class FakeFabric:
         router.post(url__regex=rf"{BASE}/workspaces/{ws}/items/[^/]+/jobs/Pipeline/schedules").mock(
             side_effect=self._schedule
         )
+        router.get(url__regex=rf"{BASE}/workspaces/{ws}/items/[^/]+/jobs/Pipeline/schedules").mock(
+            side_effect=lambda r: httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"id": s["id"]}
+                        for s in self.schedules
+                        if s["item"] == r.url.path.split("/")[-4]
+                    ]
+                },
+            )
+        )
+        router.patch(
+            url__regex=rf"{BASE}/workspaces/{ws}/items/[^/]+/jobs/Pipeline/schedules/[^/]+"
+        ).mock(side_effect=self._schedule_update)
         router.get(url__regex=rf"{BASE}/operations/.+").mock(
             return_value=httpx.Response(200, json={"status": "Succeeded"})
         )
@@ -98,8 +113,18 @@ class FakeFabric:
         return httpx.Response(201, json=body)
 
     def _schedule(self, request: httpx.Request) -> httpx.Response:
-        self.schedules.append(json.loads(request.content))
-        return httpx.Response(201, json={"id": "sched"})
+        sid = f"sched-{len(self.schedules)}"
+        self.schedules.append(
+            {**json.loads(request.content), "id": sid, "item": request.url.path.split("/")[-4]}
+        )
+        return httpx.Response(201, json={"id": sid})
+
+    def _schedule_update(self, request: httpx.Request) -> httpx.Response:
+        sid = request.url.path.rsplit("/", 1)[-1]
+        s = next(x for x in self.schedules if x["id"] == sid)
+        s.update(json.loads(request.content))
+        self.calls.append(f"schedule update {sid}")
+        return httpx.Response(200, json=s)
 
     def item(self, type_: str, name: str) -> dict[str, Any] | None:
         return next(

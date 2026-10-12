@@ -50,3 +50,69 @@ def test_quartz_conversion() -> None:
 def test_timeout_format() -> None:
     assert fab_timeout(3600) == "0.01:00:00"
     assert fab_timeout(None) == "0.12:00:00"
+
+
+def test_run_job_and_for_each_tasks_with_job_refs() -> None:
+    """Service extension (ADR 0003): only active when job_refs is passed."""
+    a = {
+        "name": "orchestrator",
+        "meta": {
+            "settings": {
+                "tasks": [
+                    {
+                        "task_key": "child",
+                        "run_job_task": {"job_id": 7, "job_parameters": {"d": "1"}},
+                    },
+                    {
+                        "task_key": "fan",
+                        "depends_on": [{"task_key": "child"}],
+                        "for_each_task": {
+                            "inputs": '["us", "eu"]',
+                            "concurrency": 2,
+                            "task": {
+                                "task_key": "fan_iter",
+                                "notebook_task": {
+                                    "notebook_path": "/x/load_region",
+                                    "base_parameters": {"region": "{{input}}", "fixed": "y"},
+                                },
+                            },
+                        },
+                    },
+                    {"task_key": "other", "run_job_task": {"job_id": 99}},
+                    {
+                        "task_key": "dyn",
+                        "for_each_task": {"inputs": "{{job.parameters.list}}", "task": {}},
+                    },
+                ]
+            }
+        },
+    }
+    assert convert_job(a, load_cfg(None))[0] is None  # reference behaviour: all omitted
+    pipe, _, notes, omitted = convert_job(a, load_cfg(None), {"7": "pl_child"})
+    assert pipe is not None
+    acts = {x["name"]: x for x in pipe["properties"]["activities"]}
+    assert set(acts) == {"child", "fan"}
+    ex = acts["child"]
+    assert ex["type"] == "ExecutePipeline"
+    assert ex["typeProperties"]["pipeline"] == {
+        "referenceName": "@@PL:pl_child@@",
+        "type": "PipelineReference",
+    }
+    assert ex["typeProperties"]["waitOnCompletion"] is True
+    assert ex["typeProperties"]["parameters"] == {"d": "1"}
+    fe = acts["fan"]
+    assert fe["type"] == "ForEach" and "policy" not in fe
+    assert fe["dependsOn"] == [{"activity": "child", "dependencyConditions": ["Succeeded"]}]
+    tp = fe["typeProperties"]
+    assert tp["items"] == {"value": '@json(\'["us", "eu"]\')', "type": "Expression"}
+    assert tp["isSequential"] is False and tp["batchCount"] == 2
+    inner = tp["activities"][0]
+    assert inner["typeProperties"]["notebookId"] == "@@NB:load_region@@"
+    assert inner["typeProperties"]["parameters"]["region"] == {
+        "value": {"value": "@{item()}", "type": "Expression"},
+        "type": "string",
+    }
+    assert inner["typeProperties"]["parameters"]["fixed"] == {"value": "y", "type": "string"}
+    text = " | ".join(omitted)
+    assert "other: Run Job task: job 99 is not part of this migration" in text
+    assert "dyn: For-each task: inputs are not a literal JSON array" in text
