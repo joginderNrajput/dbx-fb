@@ -19,7 +19,7 @@ from app.core.config import Settings
 from app.core.exceptions import ValidationFailed
 from app.databricks.auth import DatabricksCredentials
 from app.databricks.client import DatabricksClient
-from app.databricks.discovery import DiscoveryOptions, discover
+from app.databricks.discovery import DiscoveryOptions, Selection, discover, discover_selected
 from app.fabric.auth import FabricCredentials, acquire_token
 from app.fabric.client import Fabric
 from app.fabric.deploy import deploy
@@ -48,6 +48,7 @@ class SessionSpec:
     out_dir: Path
     databricks: DatabricksCredentials | None = None
     discovery: DiscoveryOptions = field(default_factory=DiscoveryOptions)
+    selection: Selection | None = None  # picked objects only (spec §5.10)
     uploaded_notebooks: list[str] = field(default_factory=list)
     assessment: dict[str, Any] | None = None  # uploaded / supplied inventory
     uploaded_mapping: dict[str, Any] = field(default_factory=dict)
@@ -152,7 +153,10 @@ class MigrationSession:
                     "Databricks credentials are required for a databricks source",
                     field="source.credentials",
                 )
-            assess = discover(client, s.discovery)
+            if s.selection and not s.selection.is_empty():
+                assess = discover_selected(client, s.selection, s.discovery.max_notebooks)
+            else:
+                assess = discover(client, s.discovery)
         else:
             if not s.uploaded_notebooks:
                 raise ValidationFailed(

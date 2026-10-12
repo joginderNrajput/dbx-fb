@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.browse import SelectionIn
 from app.schemas.common import StrictModel
 from app.schemas.credentials import DatabricksCredentialsIn, FabricCredentialsIn
 
@@ -45,6 +46,12 @@ class DatabricksSourceIn(StrictModel):
     )
     include_secret_scopes: bool = True
     include_clusters: bool = True
+    include_pipelines: bool = True
+    include_warehouses: bool = True
+    selection: SelectionIn | None = Field(
+        None,
+        description="Migrate only these objects (ids/paths from the GET /databricks/* browse API); skips the crawl",
+    )
     max_notebooks: int | None = Field(None, ge=1)
 
 

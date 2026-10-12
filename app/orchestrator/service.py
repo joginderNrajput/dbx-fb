@@ -21,7 +21,7 @@ from app.core.metrics import ITEM_OUTCOMES, JOBS_STARTED
 from app.core.secrets import resolve_secret
 from app.core.security import ensure_safe_url
 from app.databricks.auth import DatabricksCredentials
-from app.databricks.discovery import DiscoveryOptions
+from app.databricks.discovery import DiscoveryOptions, Selection
 from app.fabric.auth import FabricCredentials
 from app.migration.mapping import validate_overrides
 from app.migration.session import MigrationSession, SessionSpec
@@ -210,11 +210,14 @@ class MigrationService:
                 schemas=s.schemas,
                 include_secret_scopes=s.include_secret_scopes,
                 include_clusters=s.include_clusters,
+                include_pipelines=s.include_pipelines,
+                include_warehouses=s.include_warehouses,
                 max_notebooks=min(
                     s.max_notebooks or self.settings.DATABRICKS_MAX_NOTEBOOKS,
                     self.settings.DATABRICKS_MAX_NOTEBOOKS,
                 ),
             ),
+            selection=Selection(**s.selection.model_dump()) if s.selection else None,
             mapping_overrides=req.mapping,
             fabric=t.fabric,
             workspace_id=t.workspace_id,
@@ -232,7 +235,12 @@ class MigrationService:
                 id=job_id,
                 mode=req.options.mode,
                 source_kind="databricks",
-                options=self._options_record(req.options, t, dbx),
+                options={
+                    **self._options_record(req.options, t, dbx),
+                    "selection": {k: len(v) for k, v in s.selection.model_dump().items() if v}
+                    if s.selection
+                    else None,
+                },
             )
         )
         self._start(rec, spec, req.options, llm)

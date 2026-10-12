@@ -134,3 +134,13 @@ def test_failed_pipeline_marks_item_not_migrated(
         deploy(out, cfg, Fabric("tok", settings), "ws-1", only=["notebook", "pipeline"])
     it = next(i for i in load_ledger(out)["items"] if i["id"] == "Job:nightly_sales")
     assert it["outcome"] == NOT and it["deployment"] == "failed"
+
+
+def test_paging_stops_on_repeated_token(tmp_path: Path) -> None:
+    with respx.mock() as router:
+        router.get(url__startswith="https://api.fabric.microsoft.com/v1/workspaces").mock(
+            return_value=httpx.Response(
+                200, json={"value": [{"id": "w"}], "continuationToken": "same"}
+            )
+        )
+        assert len(Fabric("tok", make_settings(tmp_path)).list_workspaces()) == 2

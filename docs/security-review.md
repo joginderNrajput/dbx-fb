@@ -11,6 +11,7 @@ customer notebook source and metadata (in `OUTPUT_DIR`), and the service's API k
 | Credential leakage via storage | credentials are never persisted; job.json stores booleans; re-deploy requires credentials again | `orchestrator/service.py`, `jobs.py` |
 | Credential leakage via logs or errors | `SecretStr` schemas, `repr=False` dataclasses, key-name redaction processor, `hide_input_in_errors` on settings | `schemas/credentials.py`, `core/logging.py`, `core/config.py` |
 | Unauthenticated use | `X-API-Key` against Argon2id hashes; `AUTH_DISABLED` refused in production | `api/deps.py`, `core/config.py` |
+| Credentials leaking from browse GETs into access logs or proxies | credentials only in `X-Databricks-*` / `X-Fabric-*` headers, never query parameters | `api/v1/browse.py` |
 | SSRF through "Databricks host" | https only, private/loopback/link-local addresses refused (`ALLOW_PRIVATE_HOSTS` dev only) | `core/security.py` |
 | Path traversal via upload / zip slip | normalised member names, `..`/absolute rejected, writes confined to `sources/` | `sources/offline.py` |
 | Path traversal via assessment `source_path` / dbt folder | resolved paths must stay inside `sources/` | `sources/lookup.py`, `migration/engine.py` |

@@ -161,7 +161,7 @@ large, 422 domain validation, 502 Databricks/Fabric upstream failure, 503 AI una
 ### 5.1 Live Databricks source — `POST /migrations`
 Body: `source {type: databricks, credentials {host, token | client_id+client_secret},
 workspace_paths, include_jobs, include_tables, catalogs, schemas, include_secret_scopes,
-include_clusters, max_notebooks, warehouse_id}`, `target {workspace_id | workspace_name,
+include_clusters, include_pipelines, include_warehouses, max_notebooks, warehouse_id, selection}`, `target {workspace_id | workspace_name,
 lakehouse, credentials}`, `mapping {...}`, `options {mode, deploy, deploy_only, force_deploy,
 ai_fix, copy_data, agent_instructions}`, optional `assessment`. `target.lakehouse` sends every
 catalog to one destination lakehouse (existing or created). The host must be
@@ -195,6 +195,32 @@ Inspection: `GET /migrations`, `/{id}`, `/{id}/items`, `/{id}/preflight`, `/{id}
 `/{id}/report.csv`, `/{id}/runbook`, `/{id}/artifacts[/{path}]`, `/{id}/download` (zip),
 `/{id}/agent-trace`. Changes: `POST /{id}/cancel`, `POST /{id}/results` (record manual work),
 `POST /{id}/validation`, `DELETE /{id}`.
+
+### 5.10 Browse API and selection — `GET /databricks/*`, `GET /fabric/*`
+Read-only listings to choose what to migrate (and where to), so the migration does not crawl the
+workspace again. Credentials go in headers (never the query string): `X-Databricks-Host` +
+`X-Databricks-Token` or `X-Databricks-Client-Id`/`-Secret`; `X-Fabric-Tenant-Id`/`-Client-Id`/
+`-Client-Secret` or `X-Fabric-Access-Token`. Same host guards and dev env fallback as §5.1.
+
+| Endpoint | Lists | `selection` key ← field |
+|---|---|---|
+| `/databricks/workspace?path=` | one folder level | `notebooks` ← `path` |
+| `/databricks/notebooks?path=&limit=` | notebooks under folder(s), recursive | `notebooks` ← `path` |
+| `/databricks/jobs?name=`, `/databricks/jobs/{id}` | jobs (tasks, notebook paths, schedule) / full definition | `jobs` ← `job_id` |
+| `/databricks/clusters?include_job_clusters=` | all-purpose clusters | `clusters` ← `cluster_id` |
+| `/databricks/pipelines?name=` | DLT / Lakeflow pipelines | `pipelines` ← `pipeline_id` |
+| `/databricks/warehouses` | SQL warehouses (also for `source.warehouse_id`) | `warehouses` ← `id` |
+| `/databricks/catalogs`, `/catalogs/{c}/schemas`, `/catalogs/{c}/schemas/{s}/tables` | Unity Catalog | `tables` ← `full_name` (a schema = all its tables) |
+| `/databricks/secret-scopes` | scopes and key names | `secret_scopes` ← `name` |
+| `/databricks/inventory?path=&catalog=&schema=&include_*=` | everything, in assessment format | send as `assessment` |
+| `/fabric/workspaces`, `/fabric/workspaces/{id or name}/lakehouses`, `/…/items?type=` | Fabric targets | `target.workspace_*`, `target.lakehouse` |
+
+Every list response is `{count, items, selection_key, id_field, truncated, warnings}`.
+`POST /migrations` with `source.selection` (any non-empty list) inventories **only** those
+objects, each by a direct lookup (`workspace/get-status`, `jobs/get`, `clusters/get`,
+`unity-catalog/tables/{name}`, `pipelines/{id}`, `sql/warehouses/{id}`, `secrets/list`). A folder path
+selects every notebook under it. Objects that cannot be read become inventory warnings, not
+errors. Notebook source is still exported per selected notebook at convert time.
 
 ### 5.9 Data copy — `options.copy_data` (or `copy_data` on `POST /{id}/deploy`)
 For every table (MANAGED / EXTERNAL / MATERIALIZED_VIEW / STREAMING_TABLE; views are recreated,

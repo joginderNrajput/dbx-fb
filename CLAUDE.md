@@ -108,6 +108,11 @@ Development-only flags, refused when `APP_ENV=production`: `AUTH_DISABLED`,
   principal. `EXTERNAL_LINKS` downloads also need `*.blob.core.windows.net` reachable.
 - **Scripted multi-line edits must assert their anchor.** After `ruff format` reflows a block, a
   silent `str.replace` no-op once left a feature half-applied with green tests elsewhere.
+- **Browse GETs take credentials in `X-Databricks-*` / `X-Fabric-*` headers, never query params.**
+  Query strings land in access logs; headers do not. The browse lists and `discover_selected`
+  share the asset builders in `app/databricks/discovery.py`, so what is listed is what gets migrated.
+- **Paginators stop on a repeated continuation token.** A fake that kept returning the same token
+  once hung the test suite; a misbehaving API would hang a job the same way.
 - **The Docker image has no apt layer.** `python:3.12-slim` ships CA certificates and every
   dependency has a wheel. If a new dependency needs a compiler, add `build-essential` to the
   builder stage only.

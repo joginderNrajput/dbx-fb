@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
+import urllib.parse
 from collections.abc import Iterator
 from typing import Any
 
@@ -165,12 +166,14 @@ class DatabricksClient:
     # ── jobs ──
     def iter_jobs(self) -> Iterator[dict[str, Any]]:
         token: str | None = None
+        seen: set[str] = set()
         while True:
             r = self.get("/api/2.1/jobs/list", expand_tasks="true", limit=25, page_token=token)
             yield from r.get("jobs", [])
             token = r.get("next_page_token")
-            if not token or not r.get("has_more", True):
+            if not token or not r.get("has_more", True) or token in seen:
                 return
+            seen.add(token)
 
     # ── unity catalog ──
     def list_catalogs(self) -> list[dict[str, Any]]:
@@ -185,6 +188,7 @@ class DatabricksClient:
 
     def iter_tables(self, catalog: str, schema: str) -> Iterator[dict[str, Any]]:
         token: str | None = None
+        seen: set[str] = set()
         while True:
             r = self.get(
                 "/api/2.1/unity-catalog/tables",
@@ -194,8 +198,9 @@ class DatabricksClient:
             )
             yield from r.get("tables", [])
             token = r.get("next_page_token")
-            if not token:
+            if not token or token in seen:  # a repeated token would loop forever
                 return
+            seen.add(token)
 
     # ── secrets / compute ──
     def list_secret_scopes(self) -> list[dict[str, Any]]:
@@ -211,3 +216,34 @@ class DatabricksClient:
     def list_clusters(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = self.get("/api/2.0/clusters/list").get("clusters", [])
         return out
+
+    # ── single-object lookups (selection-based inventory, spec §5.10) ──
+    def get_status(self, path: str) -> dict[str, Any]:
+        return self.get("/api/2.0/workspace/get-status", path=path)
+
+    def get_job(self, job_id: int | str) -> dict[str, Any]:
+        return self.get("/api/2.1/jobs/get", job_id=job_id)
+
+    def get_cluster(self, cluster_id: str) -> dict[str, Any]:
+        return self.get("/api/2.0/clusters/get", cluster_id=cluster_id)
+
+    def get_table(self, full_name: str) -> dict[str, Any]:
+        return self.get(f"/api/2.1/unity-catalog/tables/{urllib.parse.quote(full_name, safe='')}")
+
+    def iter_pipelines(self) -> Iterator[dict[str, Any]]:
+        """Delta Live Tables / Lakeflow declarative pipelines."""
+        token: str | None = None
+        seen: set[str] = set()
+        while True:
+            r = self.get("/api/2.0/pipelines", max_results=100, page_token=token)
+            yield from r.get("statuses", [])
+            token = r.get("next_page_token")
+            if not token or token in seen:  # a repeated token would loop forever
+                return
+            seen.add(token)
+
+    def get_pipeline(self, pipeline_id: str) -> dict[str, Any]:
+        return self.get(f"/api/2.0/pipelines/{urllib.parse.quote(pipeline_id, safe='')}")
+
+    def get_warehouse(self, warehouse_id: str) -> dict[str, Any]:
+        return self.get(f"/api/2.0/sql/warehouses/{urllib.parse.quote(warehouse_id, safe='')}")

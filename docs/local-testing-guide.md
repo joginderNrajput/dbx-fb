@@ -238,6 +238,65 @@ Development shortcut: with `ALLOW_ENV_CREDENTIALS=true` and `DATABRICKS_HOST` /
 
 ---
 
+### 6b. Browse first, then migrate only what you picked
+
+The browse API lists what is in the workspace. Credentials go in **headers**. With
+`ALLOW_ENV_CREDENTIALS=true` and `.env` filled in, you can leave them out.
+
+```bash
+H=(-H "X-Databricks-Host: https://adb-<id>.<n>.azuredatabricks.net" -H "X-Databricks-Token: dapi...")
+curl -s "${H[@]}" "$API/databricks/notebooks?path=/Workspace/Shared" | python3 -m json.tool
+curl -s "${H[@]}" "$API/databricks/workspace?path=/Repos"            # one folder level
+curl -s "${H[@]}" "$API/databricks/jobs?name=sales"
+curl -s "${H[@]}" "$API/databricks/jobs/123456"                       # full job definition
+curl -s "${H[@]}" "$API/databricks/clusters"
+curl -s "${H[@]}" "$API/databricks/pipelines"                         # DLT / Lakeflow
+curl -s "${H[@]}" "$API/databricks/warehouses"                        # also used by copy_data
+curl -s "${H[@]}" "$API/databricks/catalogs"
+curl -s "${H[@]}" "$API/databricks/catalogs/altryxtodatabricks_accelarator_01/schemas"
+curl -s "${H[@]}" "$API/databricks/catalogs/altryxtodatabricks_accelarator_01/schemas/flip_local_test/tables"
+curl -s "${H[@]}" "$API/databricks/secret-scopes"                     # key names only
+
+F=(-H "X-Fabric-Tenant-Id: <tenant>" -H "X-Fabric-Client-Id: <app-id>" -H "X-Fabric-Client-Secret: <secret>")
+curl -s "${F[@]}" "$API/fabric/workspaces"
+curl -s "${F[@]}" "$API/fabric/workspaces/Alteryx_Fabric/lakehouses"  # id or name; shows schemas_enabled
+```
+
+Every list says where its ids go: `selection_key` and `id_field`. For example, jobs returns
+`"selection_key": "jobs", "id_field": "job_id"`. Put the picked values into `source.selection`:
+
+```bash
+curl -s -X POST $API/migrations -H 'content-type: application/json' -d '{
+  "source": {
+    "type": "databricks",
+    "credentials": {"host": "https://adb-...", "token": "dapi..."},
+    "selection": {
+      "notebooks": ["/Workspace/Shared/etl/load_sales", "/Repos/team/reporting"],
+      "jobs": ["123456"],
+      "clusters": ["0101-123456-abcd"],
+      "pipelines": ["a1b2c3d4-..."],
+      "warehouses": ["7f3c..."],
+      "tables": ["altryxtodatabricks_accelarator_01.flip_local_test.orders",
+                 "altryxtodatabricks_accelarator_01.flip_local_test"],
+      "secret_scopes": ["kv-sales"]
+    }
+  },
+  "target": {"workspace_name": "Alteryx_Fabric", "lakehouse": "Src_LK", "credentials": {"tenant_id": "...", "client_id": "...", "client_secret": "..."}},
+  "options": {"deploy": true, "copy_data": true}
+}'
+```
+
+With a selection, the job does **not** crawl the workspace. It reads only those objects, each
+with one direct lookup. A folder path selects every notebook under it, and `catalog.schema`
+selects all of its tables. Kinds you leave out are not migrated. Anything that can't be read (a
+deleted job, a missing permission) shows up in the job's `inventory.warnings`.
+
+Alternatively, `GET /databricks/inventory?path=...&catalog=...&schema=...` returns the whole
+inventory in the engine's format. Send it, or a trimmed copy of its `assets`, as `assessment` in
+`POST /migrations` to skip discovery completely.
+
+---
+
 ## 7. Scenario C — deploy to Fabric
 
 Check the Fabric credentials and workspace:

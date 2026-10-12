@@ -85,10 +85,33 @@ class Fabric:
                 raise FabricError(f"operation failed: {js}")
         raise FabricError("operation timed out")
 
+    def list_paged(self, path: str) -> list[dict[str, Any]]:
+        """GET a Fabric list endpoint, following continuationToken."""
+        out: list[dict[str, Any]] = []
+        tok: str | None = None
+        seen: set[str] = set()
+        while True:
+            sep = "&" if "?" in path else "?"
+            _, _, js = self.req(
+                "GET", path + (f"{sep}continuationToken={urllib.parse.quote(tok)}" if tok else "")
+            )
+            out += js.get("value", [])
+            tok = js.get("continuationToken")
+            if not tok or tok in seen:  # a repeated token would loop forever
+                return out
+            seen.add(tok)
+
     def list_workspaces(self) -> list[dict[str, Any]]:
-        _, _, js = self.req("GET", "/workspaces")
-        out: list[dict[str, Any]] = js.get("value", [])
-        return out
+        return self.list_paged("/workspaces")
+
+    def list_lakehouses(self, ws: str) -> list[dict[str, Any]]:
+        return self.list_paged(f"/workspaces/{ws}/lakehouses")
+
+    def list_items(self, ws: str, item_type: str | None = None) -> list[dict[str, Any]]:
+        return self.list_paged(
+            f"/workspaces/{ws}/items"
+            + (f"?type={urllib.parse.quote(item_type)}" if item_type else "")
+        )
 
     def get_workspace(self, ws: str) -> dict[str, Any]:
         _, _, js = self.req("GET", f"/workspaces/{urllib.parse.quote(ws)}")
