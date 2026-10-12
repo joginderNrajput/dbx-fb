@@ -1,116 +1,101 @@
-# API curl reference
+# API curl reference (Postman-ready)
 
-Copy-paste curl commands for **every** endpoint of the service (53 routes). Set the variables in
-§0 once per shell (replace each `<...>` placeholder; the quotes keep the block pasteable even
-before you do). Every command below reads them.
+Every request of the service (53 routes) as **one self-contained curl command** that Postman can
+import as is. No shell variables, heredocs or pipes: values come from Postman variables
+(`{{baseUrl}}`, `{{dbx_host}}`, ...), which Postman substitutes when it sends the request.
 
-**Credentials always travel in the JSON request body** (never in headers or the URL):
+## How to use it in Postman
 
-| System | Accepted | Rule |
+1. **Create the environment once.** Postman → *Environments* → *Import* →
+   [`docs/postman/dbx2fabric.postman_environment.json`](postman/dbx2fabric.postman_environment.json),
+   then fill in the values (table below) and select the environment (top right).
+2. **Import a request.** Copy one curl block → Postman *Import* (or `Ctrl/Cmd+O`) → *Raw text* →
+   paste → *Continue* → *Import*. Pasting the curl straight into the URL bar of a new request
+   works too. Postman keeps the `{{...}}` placeholders and fills them from the environment.
+3. **Send.** Long-running calls return `202` with an `id`; put it in `job_id` (or add the test
+   script below so Postman does it for you), then poll *Get one migration* until `status` is
+   `succeeded`, `failed` or `cancelled`.
+
+### Environment variables
+
+| Variable | Example | Used for |
 |---|---|---|
-| Databricks | service principal `{host, client_id, client_secret}` **or** personal access token `{host, personal_access_token}` | if `client_id` + `client_secret` are present the service principal (OAuth M2M) is used and the token is ignored; otherwise the token is used. Sending only one of `client_id` / `client_secret` is a 422. `token` is accepted as an alias of `personal_access_token`. |
-| Fabric | service principal `{tenant_id, client_id, client_secret}` **only** | all three are required |
+| `baseUrl` | `http://localhost:8000` | every request |
+| `apiKey` | `local-dev` | `X-API-Key` header (any value when the server runs with `AUTH_DISABLED=true`; else a key from `make hash-key`) |
+| `dbx_host` | `https://adb-1234567890123456.7.azuredatabricks.net` | Databricks workspace URL |
+| `dbx_client_id` | service principal application id | Databricks **service principal** (leave empty to use the token) |
+| `dbx_client_secret` | service principal OAuth secret | Databricks **service principal** (leave empty to use the token) |
+| `dbx_token` | `dapi...` | Databricks **personal access token** (leave empty when using the service principal) |
+| `dbx_path` | `/Workspace/Shared` | a workspace folder to browse / migrate |
+| `dbx_catalog` | `altryxtodatabricks_accelarator_01` | Unity Catalog catalog |
+| `dbx_schema` | `flip_local_test` | Unity Catalog schema |
+| `dbx_job_id` | `123456789` | a Databricks job id (from *List jobs*) |
+| `fab_tenant_id` | Entra tenant id | Fabric service principal |
+| `fab_client_id` | service principal application id | Fabric service principal |
+| `fab_client_secret` | service principal client secret | Fabric service principal |
+| `fab_workspace` | `Alteryx_Fabric` | Fabric workspace **name or id** |
+| `fab_lakehouse` | `Src_LK` | destination lakehouse (existing or created) |
+| `job_id` | `mig_0123456789abcdef0123` | a migration id (from a `202` response) |
 
-- Interactive docs (same endpoints, try-it-out): `http://localhost:8000/docs`
-- Errors always look like `{"error": {"code", "message", "field"}}`.
-- `X-API-Key` (the service's own API key, not a Databricks/Fabric credential) is required unless
-  the server runs with `AUTH_DISABLED=true` (local default); it is included everywhere.
-- Long-running work (`POST /migrations`, `/upload`, `/deploy`) returns `202` with a job `id`; poll
-  `GET /migrations/{id}` until `status` is `succeeded`, `failed` or `cancelled`.
+Mark the secret variables as type *secret* in Postman. Keep credentials in the environment, not in
+a shared collection: the service never stores them, but a collection export would.
 
-Contents: [0 Setup](#0-setup) · [1 Health](#1-health) · [2 Connection checks](#2-connection-checks) ·
+### Credentials (always in the JSON body)
+
+| System | What the body carries | Rule |
+|---|---|---|
+| Databricks | `{"host", "client_id", "client_secret", "personal_access_token"}` | If `client_id` **and** `client_secret` are non-empty, the service principal (OAuth M2M) is used and the token is ignored. Otherwise the token is used. Empty strings count as "not sent", so the same body works for both: **fill either `dbx_client_id` + `dbx_client_secret`, or `dbx_token`, and leave the other(s) empty.** Only one of id / secret filled → `422`. |
+| Fabric | `{"tenant_id", "client_id", "client_secret"}` | Service principal only; all three required. |
+
+Every variable used in a request must exist in the environment (an undefined `{{var}}` is sent
+literally). Unused ones stay defined with an empty value.
+
+### Save the migration id automatically (optional)
+
+On any request that starts a migration (`POST /migrations`, `/upload`, `/deploy`), open the
+*Scripts → Post-response* (older Postman: *Tests*) tab and paste:
+
+```javascript
+const body = pm.response.json();
+if (body.id) { pm.environment.set("job_id", body.id); }
+```
+
+### Responses
+
+- Errors always look like `{"error": {"code", "message", "field"}}`; `field` names the bad input.
+- Interactive docs with the same endpoints: `{{baseUrl}}/docs`.
+- Browse lists return `{count, items, selection_key, id_field, truncated, warnings}`: put
+  `item[id_field]` into `source.selection.<selection_key>` of *Start a migration*.
+
+Contents: [1 Health](#1-health) · [2 Connection checks](#2-connection-checks) ·
 [3 Browse Databricks](#3-browse-databricks) · [4 Browse Fabric](#4-browse-fabric) ·
 [5 Start a migration](#5-start-a-migration) · [6 Follow and inspect](#6-follow-and-inspect-a-migration) ·
 [7 Deploy, validate, record](#7-deploy-validate-record) · [8 Convert one asset](#8-convert-one-asset-synchronous) ·
-[9 Cancel and delete](#9-cancel-and-delete) · [10 Recipes](#10-end-to-end-recipes)
-
----
-
-## 0. Setup
-
-```bash
-# ── service ──
-export BASE="http://localhost:8000"
-export API="$BASE/api/v1"
-export API_KEY="local-dev"                    # any value when AUTH_DISABLED=true; else a key from `make hash-key`
-
-# ── Databricks (source) ──
-export DBX_HOST="https://adb-<workspace-id>.<n>.azuredatabricks.net"
-export DBX_CLIENT_ID="<service-principal-application-id>"
-export DBX_CLIENT_SECRET="<service-principal-oauth-secret>"
-export DBX_TOKEN="<dapi-personal-access-token>"
-export DBX_CATALOG="<catalog>"                # e.g. altryxtodatabricks_accelarator_01
-export DBX_SCHEMA="<schema>"                  # e.g. flip_local_test
-export DBX_PATH="/Workspace/Shared"           # a workspace folder to browse / migrate
-
-# ── Fabric (target): service principal only ──
-export FAB_TENANT="<entra-tenant-id>"
-export FAB_CLIENT="<service-principal-application-id>"
-export FAB_SECRET="<service-principal-client-secret>"
-export FAB_WS_NAME="<workspace-name>"         # e.g. Alteryx_Fabric
-export FAB_WS_ID="<workspace-guid>"           # optional alternative to the name
-export FAB_LAKEHOUSE="<lakehouse-name>"       # e.g. Src_LK
-
-# ── filled in as you go ──
-export JOB_ID="<migration-id>"                # from a 202 response, e.g. mig_0123456789abcdef0123
-export DBX_JOB_ID="<databricks-job-id>"       # from POST /databricks/jobs
-```
-
-Then build the credential objects **once** (run this after the block above; re-run it if you
-change a variable). Pick ONE Databricks method:
-
-```bash
-# Databricks - Option A: service principal (OAuth M2M)
-export DBX_CREDS="{\"host\": \"$DBX_HOST\", \"client_id\": \"$DBX_CLIENT_ID\", \"client_secret\": \"$DBX_CLIENT_SECRET\"}"
-
-# Databricks - Option B: personal access token (use instead of A)
-# export DBX_CREDS="{\"host\": \"$DBX_HOST\", \"personal_access_token\": \"$DBX_TOKEN\"}"
-
-# Fabric - service principal
-export FAB_CREDS="{\"tenant_id\": \"$FAB_TENANT\", \"client_id\": \"$FAB_CLIENT\", \"client_secret\": \"$FAB_SECRET\"}"
-
-echo "$DBX_CREDS" | python3 -m json.tool >/dev/null && echo "DBX_CREDS ok"
-echo "$FAB_CREDS" | python3 -m json.tool >/dev/null && echo "FAB_CREDS ok"
-```
-
-Optional helpers (bash/zsh):
-
-```bash
-# Pretty-print JSON (falls back to raw output)
-pp() { python3 -m json.tool 2>/dev/null || cat; }
-
-# Wait for a migration to finish and print its final status
-wait_job() {
-  [ -n "$1" ] || { echo "wait_job: no migration id (did the POST fail?)" >&2; return 1; }
-  while :; do
-    S=$(curl -s "$API/migrations/$1" -H "X-API-Key: $API_KEY" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')
-    echo "$S"; [ "$S" = queued ] || [ "$S" = running ] || break; sleep 3
-  done
-}
-
-# Capture the id of a 202 response:  JOB_ID=$(curl ... | job_id)
-# On an error response it prints the error body to stderr and leaves JOB_ID empty.
-job_id() { python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["id"]) if "id" in d else sys.exit("request failed: "+json.dumps(d))'; }
-```
-
-> Development shortcut: with `ALLOW_ENV_CREDENTIALS=true` and `DATABRICKS_*` / `FABRIC_*` set in
-> the server's `.env`, the `credentials` objects can be omitted (`{}` bodies). Refused in production.
+[9 Cancel and delete](#9-cancel-and-delete) · [Recipe](#recipe-browse--pick--migrate--check) ·
+[Status codes](#status-codes)
 
 ---
 
 ## 1. Health
 
-Not behind auth.
+No API key needed.
+
+#### Liveness
 
 ```bash
-# Liveness: the process answers
-curl -s $BASE/healthz
+curl --location --request GET '{{baseUrl}}/healthz'
+```
 
-# Readiness: output folder writable; reports whether an LLM is configured
-curl -s $BASE/readyz | pp
+#### Readiness (output folder writable, LLM configured?)
 
-# Prometheus metrics
-curl -s $BASE/metrics | head -40
+```bash
+curl --location --request GET '{{baseUrl}}/readyz'
+```
+
+#### Prometheus metrics
+
+```bash
+curl --location --request GET '{{baseUrl}}/metrics'
 ```
 
 ---
@@ -119,190 +104,592 @@ curl -s $BASE/metrics | head -40
 
 Validate credentials without starting anything.
 
+#### Test Databricks credentials
+
+Response: `{"ok": true, "host": ..., "auth_type": "service_principal" | "personal_access_token", "user": ...}` - `auth_type` shows which method was used.
+
 ```bash
-# Databricks -> {"ok": true, "host": ..., "auth_type": "service_principal" | "personal_access_token", "user": ...}
-curl -s -X POST $API/connections/databricks/test \
-  -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
+curl --location --request POST '{{baseUrl}}/api/v1/connections/databricks/test' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
 
-# Databricks - explicit service principal (no variables needed beyond §0)
-curl -s -X POST $API/connections/databricks/test \
-  -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  --data @- <<EOF | pp
-{"credentials": {"host": "$DBX_HOST", "client_id": "$DBX_CLIENT_ID", "client_secret": "$DBX_CLIENT_SECRET"}}
-EOF
+#### Test Fabric service principal + workspace
 
-# Databricks - explicit personal access token
-curl -s -X POST $API/connections/databricks/test \
-  -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  --data @- <<EOF | pp
-{"credentials": {"host": "$DBX_HOST", "personal_access_token": "$DBX_TOKEN"}}
-EOF
+Use `"workspace_id"` instead of `"workspace_name"` if `fab_workspace` holds a GUID.
 
-# Fabric service principal + workspace by name (or "workspace_id": "$FAB_WS_ID")
-curl -s -X POST $API/connections/fabric/test \
-  -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  --data @- <<EOF | pp
-{"credentials": $FAB_CREDS, "workspace_name": "$FAB_WS_NAME"}
-EOF
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/connections/fabric/test' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "tenant_id": "{{fab_tenant_id}}",
+    "client_id": "{{fab_client_id}}",
+    "client_secret": "{{fab_client_secret}}"
+  },
+  "workspace_name": "{{fab_workspace}}"
+}'
+```
 
-# LLM (Claude or Azure OpenAI, whichever the server is configured for)
-curl -s -X POST $API/connections/llm/test -H "X-API-Key: $API_KEY" | pp
+#### Test the LLM (Claude or Azure OpenAI, as configured on the server)
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/connections/llm/test' \
+--header 'X-API-Key: {{apiKey}}'
 ```
 
 ---
 
 ## 3. Browse Databricks
 
-Read-only listings, exposed as `POST` so the credentials stay in the body. Filters go in the
-body too; path segments only name a resource. Every list returns
-`{count, items, selection_key, id_field, truncated, warnings}`: put `item[id_field]` into
-`source.selection.<selection_key>` of `POST /migrations` (§5).
+Read-only listings. They are `POST` only so that the credentials travel in the body; filters are
+body fields, path segments name a resource.
+
+#### Workspace folder (one level: folders, repos, notebooks, files)
 
 ```bash
-# One folder level (folders, repos, notebooks) - for tree pickers
-curl -s -X POST $API/databricks/workspace -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "path": "/"}
-EOF
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/workspace' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "path": "{{dbx_path}}"
+}'
+```
 
-# All notebooks under one or more folders (recursive)
-curl -s -X POST $API/databricks/notebooks -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "paths": ["$DBX_PATH"], "limit": 1000}
-EOF
+#### Notebooks under folders (recursive)
 
-# Jobs (optional case-insensitive name filter)
-curl -s -X POST $API/databricks/jobs -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "name": null, "limit": 1000}
-EOF
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/notebooks' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "paths": [
+    "{{dbx_path}}"
+  ],
+  "limit": 1000
+}'
+```
 
-# One job's full definition (tasks, schedule, parameters)
-curl -s -X POST $API/databricks/jobs/$DBX_JOB_ID -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
+#### List jobs
 
-# Clusters (all-purpose; set include_job_clusters=true for job/pipeline clusters)
-curl -s -X POST $API/databricks/clusters -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "include_job_clusters": false}
-EOF
+`name` is an optional case-insensitive filter, e.g. `"name": "nightly"`.
 
-# DLT / Lakeflow pipelines (optional name filter)
-curl -s -X POST $API/databricks/pipelines -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "name": null}
-EOF
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/jobs' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null,
+  "limit": 1000
+}'
+```
 
-# SQL warehouses (also pick one as source.warehouse_id for copy_data)
-curl -s -X POST $API/databricks/warehouses -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
+#### One job (full definition: tasks, schedule, parameters)
 
-# Unity Catalog: catalogs -> schemas -> tables
-curl -s -X POST $API/databricks/catalogs -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "include_system": false}
-EOF
-curl -s -X POST $API/databricks/catalogs/$DBX_CATALOG/schemas -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
-curl -s -X POST $API/databricks/catalogs/$DBX_CATALOG/schemas/$DBX_SCHEMA/tables -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/jobs/{{dbx_job_id}}' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
 
-# Secret scopes and key names (values are never readable)
-curl -s -X POST $API/databricks/secret-scopes -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
+#### Clusters
 
-# Unity Catalog volumes / functions / registered models of a schema (id = full name)
-for kind in volumes functions models; do
-curl -s -X POST $API/databricks/catalogs/$DBX_CATALOG/schemas/$DBX_SCHEMA/$kind -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
-done
+All-purpose clusters; `true` adds job/pipeline clusters.
 
-# SQL queries, SQL alerts, AI/BI dashboards, serving endpoints, Git folders, external locations,
-# connections (optional case-insensitive name filter)
-for kind in queries alerts dashboards serving-endpoints repos external-locations connections; do
-curl -s -X POST $API/databricks/$kind -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "name": null}
-EOF
-done
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/clusters' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "include_job_clusters": false
+}'
+```
 
-# Cluster libraries (they migrate with their cluster: select the cluster id)
-curl -s -X POST $API/databricks/libraries -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
+#### Cluster libraries (they migrate with their cluster: select the cluster id)
 
-# Non-notebook workspace files under folders (.py modules, configs, ...)
-curl -s -X POST $API/databricks/workspace-files -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "paths": ["$DBX_PATH"], "limit": 1000}
-EOF
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/libraries' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
 
-# Everything at once, in the engine's assessment format (saved to send as "assessment" in §5.4).
-# Every include_* flag defaults to true; set the ones you do not want to false.
-curl -s -X POST $API/databricks/inventory -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' -o inventory.json --data @- <<EOF
-{"credentials": $DBX_CREDS, "workspace_paths": ["$DBX_PATH"], "catalogs": ["$DBX_CATALOG"], "schemas": ["$DBX_SCHEMA"],
- "include_jobs": true, "include_tables": true, "include_secret_scopes": true,
- "include_clusters": true, "include_pipelines": true, "include_warehouses": true,
- "include_volumes": true, "include_functions": true, "include_models": true,
- "include_sql_assets": true, "include_external_locations": true, "include_connections": true,
- "include_serving_endpoints": true, "include_repos": true, "include_libraries": true,
- "include_workspace_files": true}
-EOF
-python3 -c 'import json;print(json.load(open("inventory.json")).get("summary"))'
+#### DLT / Lakeflow pipelines
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/pipelines' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### SQL warehouses (also pick one as source.warehouse_id for copy_data)
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/warehouses' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
+
+#### Unity Catalog: catalogs
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/catalogs' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "include_system": false
+}'
+```
+
+#### Unity Catalog: schemas of a catalog
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/catalogs/{{dbx_catalog}}/schemas' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
+
+#### Unity Catalog: tables and views of a schema
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/catalogs/{{dbx_catalog}}/schemas/{{dbx_schema}}/tables' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
+
+#### Unity Catalog: volumes of a schema
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/catalogs/{{dbx_catalog}}/schemas/{{dbx_schema}}/volumes' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
+
+#### Unity Catalog: functions of a schema
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/catalogs/{{dbx_catalog}}/schemas/{{dbx_schema}}/functions' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
+
+#### Unity Catalog: registered ML models of a schema
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/catalogs/{{dbx_catalog}}/schemas/{{dbx_schema}}/models' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
+
+#### Secret scopes and key names (values are never readable)
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/secret-scopes' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  }
+}'
+```
+
+#### SQL queries
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/queries' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### SQL alerts
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/alerts' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### AI/BI (Lakeview) dashboards
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/dashboards' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### Model serving endpoints
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/serving-endpoints' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### Git folders (repos)
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/repos' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### Unity Catalog external locations
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/external-locations' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### Lakehouse Federation connections (endpoint options only)
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/connections' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "name": null
+}'
+```
+
+#### Workspace files (non-notebook files under folders)
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/workspace-files' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "paths": [
+    "{{dbx_path}}"
+  ],
+  "limit": 1000
+}'
+```
+
+#### Everything at once (assessment format)
+
+Every `include_*` flag defaults to `true`; set the ones you do not want to `false`. The response can be sent back as `assessment` in *Start a migration* to skip discovery (5.4).
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/databricks/inventory' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
+  "workspace_paths": [
+    "{{dbx_path}}"
+  ],
+  "catalogs": [
+    "{{dbx_catalog}}"
+  ],
+  "schemas": [
+    "{{dbx_schema}}"
+  ],
+  "include_jobs": true,
+  "include_tables": true,
+  "include_secret_scopes": true,
+  "include_clusters": true,
+  "include_pipelines": true,
+  "include_warehouses": true,
+  "include_volumes": true,
+  "include_functions": true,
+  "include_models": true,
+  "include_sql_assets": true,
+  "include_external_locations": true,
+  "include_connections": true,
+  "include_serving_endpoints": true,
+  "include_repos": true,
+  "include_libraries": true,
+  "include_workspace_files": true
+}'
 ```
 
 ---
 
 ## 4. Browse Fabric
 
-Pick the target workspace and lakehouse (service principal in the body). A workspace in the path
-can be its id or its display name.
+Pick the target. `{{fab_workspace}}` in a path can be the workspace name or its id.
+
+#### Workspaces visible to the service principal
 
 ```bash
-# Workspaces visible to the service principal (optional name filter)
-curl -s -X POST $API/fabric/workspaces -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $FAB_CREDS, "name": null}
-EOF
+curl --location --request POST '{{baseUrl}}/api/v1/fabric/workspaces' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "tenant_id": "{{fab_tenant_id}}",
+    "client_id": "{{fab_client_id}}",
+    "client_secret": "{{fab_client_secret}}"
+  },
+  "name": null
+}'
+```
 
-# Lakehouses of a workspace (schemas_enabled, OneLake paths, SQL endpoint)
-curl -s -X POST "$API/fabric/workspaces/$FAB_WS_NAME/lakehouses" -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $FAB_CREDS}
-EOF
+#### Lakehouses of a workspace (schemas_enabled, OneLake paths, SQL endpoint)
 
-# Items already in the workspace, optionally by type (Notebook, DataPipeline, Lakehouse, Warehouse, ...)
-curl -s -X POST "$API/fabric/workspaces/$FAB_WS_NAME/items" -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $FAB_CREDS, "type": "Notebook"}
-EOF
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/fabric/workspaces/{{fab_workspace}}/lakehouses' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "tenant_id": "{{fab_tenant_id}}",
+    "client_id": "{{fab_client_id}}",
+    "client_secret": "{{fab_client_secret}}"
+  }
+}'
+```
+
+#### Items in a workspace
+
+`type`: `Notebook`, `DataPipeline`, `Lakehouse`, `Warehouse`, `Environment`, ... or `null` for all.
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/fabric/workspaces/{{fab_workspace}}/items' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "credentials": {
+    "tenant_id": "{{fab_tenant_id}}",
+    "client_id": "{{fab_client_id}}",
+    "client_secret": "{{fab_client_secret}}"
+  },
+  "type": "Notebook"
+}'
 ```
 
 ---
 
 ## 5. Start a migration
 
-All return `202 {"id": ..., "links": {...}}`. Prefix any of them with `JOB_ID=$(` and end with
-`| job_id)` to capture the id.
+All return `202 {"id": ..., "links": {...}}` (save the id in `job_id`).
 
-### 5.1 Live Databricks: selected objects only (recommended)
+### 5.1 Live Databricks
 
-Use ids/paths from §3. Only these are migrated, each fetched directly (no crawl).
+#### Selected objects only (recommended)
+
+Ids and paths come from section 3. Only these objects are migrated, each fetched directly (no crawl). A folder path selects every notebook under it; `catalog.schema` selects every table / volume / function of the schema. Remove `jobs` if `dbx_job_id` is not set.
 
 ```bash
-curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{
+curl --location --request POST '{{baseUrl}}/api/v1/migrations' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
   "source": {
     "type": "databricks",
-    "credentials": $DBX_CREDS,
+    "credentials": {
+      "host": "{{dbx_host}}",
+      "client_id": "{{dbx_client_id}}",
+      "client_secret": "{{dbx_client_secret}}",
+      "personal_access_token": "{{dbx_token}}"
+    },
     "selection": {
-      "notebooks": ["$DBX_PATH"],
-      "jobs": ["$DBX_JOB_ID"],
+      "notebooks": [
+        "{{dbx_path}}"
+      ],
+      "jobs": [
+        "{{dbx_job_id}}"
+      ],
       "clusters": [],
       "pipelines": [],
       "warehouses": [],
-      "tables": ["$DBX_CATALOG.$DBX_SCHEMA"],
+      "tables": [
+        "{{dbx_catalog}}.{{dbx_schema}}"
+      ],
       "secret_scopes": [],
-      "volumes": ["$DBX_CATALOG.$DBX_SCHEMA"],
-      "functions": ["$DBX_CATALOG.$DBX_SCHEMA"],
+      "volumes": [
+        "{{dbx_catalog}}.{{dbx_schema}}"
+      ],
+      "functions": [
+        "{{dbx_catalog}}.{{dbx_schema}}"
+      ],
       "models": [],
       "queries": [],
       "alerts": [],
@@ -314,282 +701,525 @@ curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: appli
       "workspace_files": []
     }
   },
-  "mapping": {"keyvault_url_default": "https://<your-vault>.vault.azure.net/"}
-}
-EOF
-```
-
-### 5.2 Live Databricks: everything under folders / catalogs (crawl)
-
-```bash
-curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{
-  "source": {
-    "type": "databricks",
-    "credentials": $DBX_CREDS,
-    "workspace_paths": ["$DBX_PATH"],
-    "catalogs": ["$DBX_CATALOG"],
-    "schemas": ["$DBX_SCHEMA"],
-    "include_jobs": true, "include_tables": true, "include_secret_scopes": true,
-    "include_clusters": true, "include_pipelines": true, "include_warehouses": true
+  "mapping": {
+    "keyvault_url_default": "https://your-vault.vault.azure.net/"
   }
-}
-EOF
+}'
 ```
 
-### 5.3 Full migration: code + deploy + data to a named workspace and lakehouse
+#### Everything under folders / catalogs (crawl)
 
-Converts, deploys notebooks/pipelines, copies every table's data, validates row counts and creates
-views. Needs a Databricks SQL warehouse; Fabric uses the service principal.
+Omitted `include_*` flags default to `true` (see the inventory request in section 3 for the full list).
 
 ```bash
-curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{
+curl --location --request POST '{{baseUrl}}/api/v1/migrations' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
   "source": {
     "type": "databricks",
-    "credentials": $DBX_CREDS,
-    "selection": {"notebooks": ["$DBX_PATH"], "tables": ["$DBX_CATALOG.$DBX_SCHEMA"]},
+    "credentials": {
+      "host": "{{dbx_host}}",
+      "client_id": "{{dbx_client_id}}",
+      "client_secret": "{{dbx_client_secret}}",
+      "personal_access_token": "{{dbx_token}}"
+    },
+    "workspace_paths": [
+      "{{dbx_path}}"
+    ],
+    "catalogs": [
+      "{{dbx_catalog}}"
+    ],
+    "schemas": [
+      "{{dbx_schema}}"
+    ],
+    "include_jobs": true,
+    "include_tables": true,
+    "include_volumes": true,
+    "include_functions": true,
+    "include_clusters": true,
+    "include_libraries": true
+  }
+}'
+```
+
+### 5.2 Full migration: code + deploy + data
+
+#### Convert, deploy and copy data to a named workspace and lakehouse
+
+Deploys the Environment, notebooks and pipelines; copies volume files and table data; validates
+row counts; creates views. Needs a Databricks SQL warehouse (`warehouse_id`: `null` = first available).
+Other `options`: `{"deploy": true, "deploy_only": ["notebook"]}` (smoke test) ·
+`{"deploy": true, "force_deploy": true}` (ignore preflight errors) · `{"ai_fix": true}` (LLM rewrites TODO cells).
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "source": {
+    "type": "databricks",
+    "credentials": {
+      "host": "{{dbx_host}}",
+      "client_id": "{{dbx_client_id}}",
+      "client_secret": "{{dbx_client_secret}}",
+      "personal_access_token": "{{dbx_token}}"
+    },
+    "selection": {
+      "notebooks": [
+        "{{dbx_path}}"
+      ],
+      "tables": [
+        "{{dbx_catalog}}.{{dbx_schema}}"
+      ],
+      "volumes": [
+        "{{dbx_catalog}}.{{dbx_schema}}"
+      ]
+    },
     "warehouse_id": null
   },
   "target": {
-    "workspace_name": "$FAB_WS_NAME",
-    "lakehouse": "$FAB_LAKEHOUSE",
-    "credentials": $FAB_CREDS
+    "workspace_name": "{{fab_workspace}}",
+    "lakehouse": "{{fab_lakehouse}}",
+    "credentials": {
+      "tenant_id": "{{fab_tenant_id}}",
+      "client_id": "{{fab_client_id}}",
+      "client_secret": "{{fab_client_secret}}"
+    }
   },
-  "options": {"deploy": true, "copy_data": true}
-}
-EOF
+  "options": {
+    "deploy": true,
+    "copy_data": true
+  }
+}'
 ```
 
-Variants of `options`:
-`{"deploy": true, "deploy_only": ["notebook"]}` (smoke test) ·
-`{"deploy": true, "force_deploy": true}` (ignore preflight errors) ·
-`{"ai_fix": true}` (LLM rewrites TODO cells) ·
-`{"mode": "agent", "agent_instructions": "Prefer Lakehouse tables over Files paths."}` (LLM drives the stages).
+### 5.3 Agent mode
 
-### 5.4 Live Databricks with a saved inventory (no discovery at all)
+#### The LLM drives the stages
 
 ```bash
-python3 - <<'PY'
-import json, os
-body = {"source": {"type": "databricks", "credentials": json.loads(os.environ["DBX_CREDS"])},
-        "assessment": json.load(open("inventory.json"))}
-json.dump(body, open("migration_body.json", "w"))
-PY
-curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @migration_body.json | pp
+curl --location --request POST '{{baseUrl}}/api/v1/migrations' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "source": {
+    "type": "databricks",
+    "credentials": {
+      "host": "{{dbx_host}}",
+      "client_id": "{{dbx_client_id}}",
+      "client_secret": "{{dbx_client_secret}}",
+      "personal_access_token": "{{dbx_token}}"
+    },
+    "selection": {
+      "notebooks": [
+        "{{dbx_path}}"
+      ]
+    }
+  },
+  "options": {
+    "mode": "agent",
+    "agent_instructions": "Keep behaviour identical; explain every gap in a comment."
+  }
+}'
 ```
 
-### 5.5 Agent mode (Claude or Azure OpenAI drives the migration)
+### 5.4 With a saved inventory (no discovery)
+
+Run *Everything at once* (section 3), copy its whole response, and paste it as the value of
+`assessment` (replace the example object below).
+
+#### Migrate a saved inventory
 
 ```bash
-curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{
-  "source": {"type": "databricks", "credentials": $DBX_CREDS, "selection": {"notebooks": ["$DBX_PATH"]}},
-  "options": {"mode": "agent", "agent_instructions": "Keep behaviour identical; explain every gap in a comment."}
-}
-EOF
+curl --location --request POST '{{baseUrl}}/api/v1/migrations' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "source": {
+    "type": "databricks",
+    "credentials": {
+      "host": "{{dbx_host}}",
+      "client_id": "{{dbx_client_id}}",
+      "client_secret": "{{dbx_client_secret}}",
+      "personal_access_token": "{{dbx_token}}"
+    }
+  },
+  "assessment": {
+    "assets": [
+      {
+        "type": "Notebook",
+        "name": "load_sales",
+        "location": "/Workspace/Shared/load_sales",
+        "meta": {
+          "source_path": "/Workspace/Shared/load_sales",
+          "language": "PYTHON"
+        }
+      }
+    ]
+  }
+}'
 ```
 
-### 5.6 Offline notebooks (no Databricks credentials)
+### 5.5 Offline notebooks (no Databricks credentials)
 
-Multipart upload; the `config` form field is the JSON request body. Run from the repository root
-(uses the sample notebooks in `tests/fixtures/notebooks`).
+Multipart upload. After importing, open the *Body → form-data* tab and **pick the files again**
+with *Select Files* (Postman cannot carry local file paths across machines). `files` can repeat:
+notebooks (`.py .sql .scala .r .ipynb`), a `.zip` export, `assessment.json`, `mapping.json`.
+`config` is a JSON string.
+
+#### Upload notebooks
+
+The repository has sample notebooks in `tests/fixtures/notebooks/`.
 
 ```bash
-# Individual files (filename= keeps the folder structure)
-curl -s -X POST $API/migrations/upload -H "X-API-Key: $API_KEY" \
-  -F "files=@tests/fixtures/notebooks/etl/load_sales.py;filename=etl/load_sales.py" \
-  -F "files=@tests/fixtures/notebooks/explore.ipynb" \
-  -F "files=@tests/fixtures/notebooks/report.sql" \
-  -F 'config={"mapping": {"catalog_to_lakehouse": {"main": "lh_sales"}, "mount_map": {"/mnt/raw": "Files/raw"}}}' | pp
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/upload' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'files=@"/path/to/load_sales.py"' \
+--form 'files=@"/path/to/explore.ipynb"' \
+--form 'config={"mapping": {"catalog_to_lakehouse": {"main": "lh_sales"}, "mount_map": {"/mnt/raw": "Files/raw"}}}'
+```
 
-# A zip of a whole export
-(cd tests/fixtures/notebooks && zip -qr /tmp/notebooks.zip .)
-curl -s -X POST $API/migrations/upload -H "X-API-Key: $API_KEY" \
-  -F "files=@/tmp/notebooks.zip" -F 'config={}' | pp
+#### Upload a zip export
 
-# Notebooks + assessment.json (+ optional mapping.json) from the assessor
-curl -s -X POST $API/migrations/upload -H "X-API-Key: $API_KEY" \
-  -F "files=@tests/fixtures/assessment.json" -F "files=@/tmp/notebooks.zip" \
-  -F 'config={"mapping": {"staging_storage": "abfss://stage@<account>.dfs.core.windows.net/dbx_export"}}' | pp
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/upload' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'files=@"/path/to/notebooks.zip"' \
+--form 'config={}'
+```
 
-# Offline + deploy to Fabric
-curl -s -X POST $API/migrations/upload -H "X-API-Key: $API_KEY" \
-  -F "files=@/tmp/notebooks.zip" \
-  -F "config={\"target\": {\"workspace_name\": \"$FAB_WS_NAME\", \"lakehouse\": \"$FAB_LAKEHOUSE\", \"credentials\": $FAB_CREDS},
-              \"options\": {\"deploy\": true}}" | pp
+#### Upload notebooks + assessment.json from the assessor
 
-# Offline notebooks + data copy (Databricks credentials only to read tables through a SQL warehouse)
-curl -s -X POST $API/migrations/upload -H "X-API-Key: $API_KEY" \
-  -F "files=@/tmp/notebooks.zip" \
-  -F "config={\"databricks\": $DBX_CREDS,
-              \"target\": {\"workspace_name\": \"$FAB_WS_NAME\", \"lakehouse\": \"$FAB_LAKEHOUSE\", \"credentials\": $FAB_CREDS},
-              \"options\": {\"deploy\": true, \"copy_data\": true}}" | pp
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/upload' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'files=@"/path/to/assessment.json"' \
+--form 'files=@"/path/to/notebooks.zip"' \
+--form 'config={"mapping": {"staging_storage": "abfss://stage@youraccount.dfs.core.windows.net/dbx_export"}}'
+```
+
+#### Upload + deploy to Fabric
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/upload' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'files=@"/path/to/notebooks.zip"' \
+--form 'config={"target": {"workspace_name": "{{fab_workspace}}", "lakehouse": "{{fab_lakehouse}}", "credentials": {"tenant_id": "{{fab_tenant_id}}", "client_id": "{{fab_client_id}}", "client_secret": "{{fab_client_secret}}"}}, "options": {"deploy": true}}'
+```
+
+#### Upload + deploy + data copy (Databricks credentials only to read tables)
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/upload' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'files=@"/path/to/notebooks.zip"' \
+--form 'config={"databricks": {"host": "{{dbx_host}}", "client_id": "{{dbx_client_id}}", "client_secret": "{{dbx_client_secret}}", "personal_access_token": "{{dbx_token}}"}, "target": {"workspace_name": "{{fab_workspace}}", "lakehouse": "{{fab_lakehouse}}", "credentials": {"tenant_id": "{{fab_tenant_id}}", "client_id": "{{fab_client_id}}", "client_secret": "{{fab_client_secret}}"}}, "options": {"deploy": true, "copy_data": true}}'
 ```
 
 ---
 
 ## 6. Follow and inspect a migration
 
+#### List migrations (newest first)
+
 ```bash
-# List migrations (newest first)
-curl -s "$API/migrations?limit=20" -H "X-API-Key: $API_KEY" | pp
+curl --location --request GET '{{baseUrl}}/api/v1/migrations?limit=20' \
+--header 'X-API-Key: {{apiKey}}'
+```
 
-# One migration: status, stage, inventory, summary, preflight counts, data_copy, agent, error
-#   options.databricks_auth shows which Databricks method was used (never the secret)
-curl -s $API/migrations/$JOB_ID -H "X-API-Key: $API_KEY" | pp
+#### Get one migration (poll this)
 
-# Poll until done
-wait_job $JOB_ID
+`status`, `stage`, inventory, summary, preflight counts, `data_copy`, agent, error. `options.databricks_auth` shows which Databricks method was used (never the secret).
 
-# Ledger items (optional filters: outcome=migrated|needs_testing|partial|not_migrated, type=Notebook|Job|Table/View|...)
-curl -s "$API/migrations/$JOB_ID/items" -H "X-API-Key: $API_KEY" | pp
-curl -s "$API/migrations/$JOB_ID/items?outcome=partial" -H "X-API-Key: $API_KEY" | pp
-curl -s "$API/migrations/$JOB_ID/items?type=Table/View" -H "X-API-Key: $API_KEY" | pp
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}' \
+--header 'X-API-Key: {{apiKey}}'
+```
 
-# Preflight (deploy blockers and warnings)
-curl -s $API/migrations/$JOB_ID/preflight -H "X-API-Key: $API_KEY" | pp
+#### Ledger items
 
-# Reports and runbook
-curl -s $API/migrations/$JOB_ID/report -H "X-API-Key: $API_KEY" -o report.html
-curl -s $API/migrations/$JOB_ID/report.csv -H "X-API-Key: $API_KEY" -o report.csv
-curl -s $API/migrations/$JOB_ID/runbook -H "X-API-Key: $API_KEY"
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/items' \
+--header 'X-API-Key: {{apiKey}}'
+```
 
-# Agent steps (mode=agent)
-curl -s $API/migrations/$JOB_ID/agent-trace -H "X-API-Key: $API_KEY" | pp
+#### Ledger items filtered
 
-# Generated files: list, fetch one, download everything as a zip
-curl -s $API/migrations/$JOB_ID/artifacts -H "X-API-Key: $API_KEY" | pp
-curl -s $API/migrations/$JOB_ID/artifacts/artifacts/notebooks/load_sales.ipynb -H "X-API-Key: $API_KEY" -o load_sales.ipynb
-curl -s $API/migrations/$JOB_ID/artifacts/RUNBOOK.md -H "X-API-Key: $API_KEY"
-curl -s $API/migrations/$JOB_ID/download -H "X-API-Key: $API_KEY" -o migration.zip
+`outcome`: `migrated`, `needs_testing`, `partial`, `not_migrated`. `type`: `Notebook`, `Job`, `Table/View`, `Volume`, `Library`, ... (either can be left out).
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/items?outcome=partial&type=Notebook' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### Preflight (deploy blockers and warnings)
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/preflight' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### HTML report
+
+Use *Send and Download* to save the file.
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/report' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### CSV report
+
+Use *Send and Download* to save the file.
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/report.csv' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### Runbook (Markdown)
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/runbook' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### Agent steps (mode=agent)
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/agent-trace' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### List generated files
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/artifacts' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### Fetch one generated file
+
+Any path from *List generated files*, e.g. `RUNBOOK.md`, `ledger.json`, `artifacts/pipelines/pl_nightly.json`.
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/artifacts/artifacts/notebooks/load_sales.ipynb' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### Download everything as a zip
+
+Use *Send and Download*.
+
+```bash
+curl --location --request GET '{{baseUrl}}/api/v1/migrations/{{job_id}}/download' \
+--header 'X-API-Key: {{apiKey}}'
 ```
 
 ---
 
 ## 7. Deploy, validate, record
 
-Run these one at a time: while a deploy job runs, validation / results calls return `409`.
+One at a time: while a deploy runs, validation / results calls return `409`.
+
+#### Deploy (or re-deploy) a finished migration
+
+`only` picks the kinds to deploy (`[]` = all). Credentials are needed again: they are never stored.
 
 ```bash
-# Deploy (or re-deploy) a finished migration; credentials travel with this request only.
-# "only" picks kinds: environment, notebook, shortcuts, pipeline (empty = all)
-curl -s -X POST $API/migrations/$JOB_ID/deploy -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{
-  "target": {"workspace_name": "$FAB_WS_NAME", "lakehouse": "$FAB_LAKEHOUSE", "credentials": $FAB_CREDS},
-  "only": ["notebook"],
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/{{job_id}}/deploy' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "target": {
+    "workspace_name": "{{fab_workspace}}",
+    "lakehouse": "{{fab_lakehouse}}",
+    "credentials": {
+      "tenant_id": "{{fab_tenant_id}}",
+      "client_id": "{{fab_client_id}}",
+      "client_secret": "{{fab_client_secret}}"
+    }
+  },
+  "only": [
+    "environment",
+    "notebook",
+    "shortcuts",
+    "pipeline"
+  ],
   "force": false
-}
-EOF
+}'
 ```
 
+#### Deploy everything + copy data (files and tables)
+
 ```bash
-# Deploy everything + copy table data, volume files and workspace files (Databricks credentials again)
-curl -s -X POST $API/migrations/$JOB_ID/deploy -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{
-  "target": {"workspace_name": "$FAB_WS_NAME", "lakehouse": "$FAB_LAKEHOUSE", "credentials": $FAB_CREDS},
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/{{job_id}}/deploy' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "target": {
+    "workspace_name": "{{fab_workspace}}",
+    "lakehouse": "{{fab_lakehouse}}",
+    "credentials": {
+      "tenant_id": "{{fab_tenant_id}}",
+      "client_id": "{{fab_client_id}}",
+      "client_secret": "{{fab_client_secret}}"
+    }
+  },
   "only": [],
   "copy_data": true,
-  "databricks": $DBX_CREDS,
+  "databricks": {
+    "host": "{{dbx_host}}",
+    "client_id": "{{dbx_client_id}}",
+    "client_secret": "{{dbx_client_secret}}",
+    "personal_access_token": "{{dbx_token}}"
+  },
   "warehouse_id": null
-}
-EOF
+}'
 ```
 
-```bash
-# Import validation results (results.json written by the validate_migration notebook in Fabric)
-curl -s -X POST $API/migrations/$JOB_ID/validation -H "X-API-Key: $API_KEY" -F "file=@results.json" | pp
+#### Import validation results
 
-# Record manual / AI work done outside the service (outcome: migrated|needs_testing|partial|not_migrated)
-curl -s -X POST $API/migrations/$JOB_ID/results -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<'EOF' | pp
-{"item_id": "Dashboard:Sales KPIs", "outcome": "needs_testing", "note": "Rebuilt as a Power BI report", "target_id": null}
-EOF
+`results.json` is written by the generated `validate_migration` notebook in Fabric. Re-select the file in *Body → form-data* after importing.
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/{{job_id}}/validation' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'file=@"/path/to/results.json"'
+```
+
+#### Record manual / AI work done outside the service
+
+`item_id` comes from *Ledger items*; `outcome`: `migrated`, `needs_testing`, `partial`, `not_migrated`.
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/{{job_id}}/results' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "item_id": "Dashboard:Sales KPIs",
+  "outcome": "needs_testing",
+  "note": "Rebuilt as a Power BI report",
+  "target_id": null
+}'
 ```
 
 ---
 
 ## 8. Convert one asset (synchronous)
 
-Nothing is stored and no credentials are needed; useful for trying the rules on a single file.
+Nothing is stored and no credentials are needed.
+
+#### Notebook → JSON report
+
+Re-select the file in *Body → form-data* after importing.
 
 ```bash
-# Notebook -> JSON report (outcome, changes, TODO blockers, warnings, converted notebook)
-curl -s -X POST $API/convert/notebook -H "X-API-Key: $API_KEY" \
-  -F "file=@tests/fixtures/notebooks/etl/load_sales.py" \
-  -F 'mapping={"catalog_to_lakehouse": {"main": "lh_sales"}, "mount_map": {"/mnt/raw": "Files/raw"}}' \
-  -F 'catalogs=["main"]' | pp
+curl --location --request POST '{{baseUrl}}/api/v1/convert/notebook' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'file=@"/path/to/load_sales.py"' \
+--form 'mapping={"catalog_to_lakehouse": {"main": "lh_sales"}, "mount_map": {"/mnt/raw": "Files/raw"}}' \
+--form 'catalogs=["main"]'
+```
 
-# Notebook -> download the Fabric .ipynb
-curl -s -X POST $API/convert/notebook -H "X-API-Key: $API_KEY" \
-  -F "file=@tests/fixtures/notebooks/explore.ipynb" -F "download=true" -o explore.fabric.ipynb
+#### Notebook → Fabric .ipynb file
 
-# Databricks job settings -> Fabric Data Pipeline + schedule
-curl -s -X POST $API/convert/job -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  --data "{\"name\": \"nightly_sales\", \"settings\": $(cat tests/fixtures/job_settings.json), \"mapping\": {}}" | pp
+Use *Send and Download*.
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/convert/notebook' \
+--header 'X-API-Key: {{apiKey}}' \
+--form 'file=@"/path/to/explore.ipynb"' \
+--form 'download=true'
+```
+
+#### Databricks job settings → Fabric Data Pipeline + schedule
+
+`settings` is a job's `settings` object as returned by *One job*.
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/convert/job' \
+--header 'X-API-Key: {{apiKey}}' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+  "name": "nightly_sales",
+  "settings": {
+    "schedule": {
+      "quartz_cron_expression": "0 30 2 * * ?",
+      "timezone_id": "Asia/Kolkata",
+      "pause_status": "UNPAUSED"
+    },
+    "tasks": [
+      {
+        "task_key": "load",
+        "notebook_task": {
+          "notebook_path": "/Repos/team/etl/load_sales",
+          "base_parameters": {
+            "env": "prod"
+          }
+        },
+        "timeout_seconds": 3600,
+        "max_retries": 2
+      },
+      {
+        "task_key": "publish",
+        "depends_on": [
+          {
+            "task_key": "load"
+          }
+        ],
+        "notebook_task": {
+          "notebook_path": "/Repos/team/etl/publish"
+        }
+      }
+    ]
+  },
+  "mapping": {}
+}'
 ```
 
 ---
 
 ## 9. Cancel and delete
 
-```bash
-# Cancel a queued/running migration (stops at the next stage boundary)
-curl -s -X POST $API/migrations/$JOB_ID/cancel -H "X-API-Key: $API_KEY" | pp
+#### Cancel a queued / running migration
 
-# Delete a finished migration and its files (204)
-curl -s -o /dev/null -w "%{http_code}\n" -X DELETE $API/migrations/$JOB_ID -H "X-API-Key: $API_KEY"
+Stops at the next stage boundary.
+
+```bash
+curl --location --request POST '{{baseUrl}}/api/v1/migrations/{{job_id}}/cancel' \
+--header 'X-API-Key: {{apiKey}}'
+```
+
+#### Delete a finished migration and its files
+
+Returns `204`.
+
+```bash
+curl --location --request DELETE '{{baseUrl}}/api/v1/migrations/{{job_id}}' \
+--header 'X-API-Key: {{apiKey}}'
 ```
 
 ---
 
-## 10. End-to-end recipes
+## Recipe: browse → pick → migrate → check
 
-### Browse → pick → migrate everything (code + data) → check
+1. *Test Databricks credentials* and *Test Fabric service principal + workspace* (section 2).
+2. *Notebooks under folders*, *Unity Catalog: tables of a schema*, *List jobs* (section 3): note
+   the ids / paths you want.
+3. *Lakehouses of a workspace* (section 4): pick `fab_lakehouse`.
+4. *Convert, deploy and copy data* (5.2) with your selection; save `job_id`.
+5. *Get one migration* until `status` is `succeeded`; read `summary` and `data_copy`.
+6. *Ledger items filtered* with `outcome=partial` / `not_migrated` for what still needs work,
+   *Download everything as a zip* for the generated artifacts and the runbook.
 
-```bash
-# 1. find what to migrate
-curl -s -X POST $API/databricks/notebooks -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS, "paths": ["$DBX_PATH"]}
-EOF
-curl -s -X POST $API/databricks/catalogs/$DBX_CATALOG/schemas/$DBX_SCHEMA/tables -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
-{"credentials": $DBX_CREDS}
-EOF
-
-# 2. start the migration and capture its id
-JOB_ID=$(curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | job_id
-{"source": {"type": "databricks", "credentials": $DBX_CREDS,
-            "selection": {"notebooks": ["$DBX_PATH"], "tables": ["$DBX_CATALOG.$DBX_SCHEMA"]}},
- "target": {"workspace_name": "$FAB_WS_NAME", "lakehouse": "$FAB_LAKEHOUSE", "credentials": $FAB_CREDS},
- "options": {"deploy": true, "copy_data": true}}
-EOF
-); echo "$JOB_ID"
-
-# 3. wait, then look at the outcome
-wait_job $JOB_ID
-curl -s $API/migrations/$JOB_ID -H "X-API-Key: $API_KEY" | python3 -c \
-  'import sys,json;d=json.load(sys.stdin);print(d["status"]);print(d["summary"]);print(d.get("data_copy"));print(d.get("error"))'
-curl -s "$API/migrations/$JOB_ID/items?outcome=partial" -H "X-API-Key: $API_KEY" | pp
-```
-
-### Offline smoke test (no credentials, works on a fresh clone)
-
-```bash
-JOB_ID=$(curl -s -X POST $API/migrations/upload -H "X-API-Key: $API_KEY" \
-  -F "files=@tests/fixtures/notebooks/etl/load_sales.py;filename=etl/load_sales.py" \
-  -F "files=@tests/fixtures/notebooks/explore.ipynb" -F 'config={}' | job_id)
-wait_job $JOB_ID
-curl -s "$API/migrations/$JOB_ID/items" -H "X-API-Key: $API_KEY" | pp
-curl -s $API/migrations/$JOB_ID/download -H "X-API-Key: $API_KEY" -o migration.zip && unzip -l migration.zip | tail -5
-```
-
----
-
-### Status codes you will see
+## Status codes
 
 | Code | Meaning |
 |---|---|
 | 200 / 202 / 204 | OK / job accepted / deleted |
-| 400 | malformed request; `field` names the unknown or invalid field (e.g. `credentials.client_secret` missing for Fabric) |
+| 400 | malformed request; `field` names the invalid field |
 | 401 | missing or invalid `X-API-Key` |
 | 404 | unknown migration, file or item |
 | 405 | wrong method (browse endpoints are `POST`) |
@@ -597,4 +1227,4 @@ curl -s $API/migrations/$JOB_ID/download -H "X-API-Key: $API_KEY" -o migration.z
 | 413 | upload too large (`MAX_UPLOAD_MB`) |
 | 422 | validation: missing credentials, half a Databricks service principal, bad tenant id, private Databricks host, unknown mapping key, preflight errors |
 | 502 | Databricks / Fabric / Entra ID returned an error (message included) |
-| 503 | agent mode / ai_fix / llm test without a configured LLM |
+| 503 | agent mode / ai_fix / LLM test without a configured LLM |
