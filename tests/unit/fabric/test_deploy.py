@@ -144,3 +144,24 @@ def test_paging_stops_on_repeated_token(tmp_path: Path) -> None:
             )
         )
         assert len(Fabric("tok", make_settings(tmp_path)).list_workspaces()) == 2
+
+
+def test_bad_tenant_and_non_json_responses(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    for bad in ("<entra-tenant-id>", "t/../../evil", "x y"):
+        with pytest.raises(ValidationFailed, match="tenant_id"):
+            FabricCredentials(tenant_id=bad, client_id="c", client_secret="s")
+    assert FabricCredentials(tenant_id="contoso.onmicrosoft.com", client_id="c", client_secret="s")
+    with respx.mock() as router:
+        router.post(url__startswith="https://login.microsoftonline.com/").mock(
+            return_value=httpx.Response(200, text="<html>sign in</html>")
+        )
+        with httpx.Client() as http, pytest.raises(FabricError, match="not JSON"):
+            acquire_token(
+                FabricCredentials(tenant_id="t1", client_id="c", client_secret="s"), settings, http
+            )
+        router.get("https://api.fabric.microsoft.com/v1/workspaces").mock(
+            return_value=httpx.Response(200, text="<html>proxy</html>")
+        )
+        with pytest.raises(FabricError, match="not JSON"):
+            Fabric("tok", settings).list_workspaces()

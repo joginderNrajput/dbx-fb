@@ -73,7 +73,12 @@ class DatabricksClient:
                 last = str(e)
             else:
                 if r.status_code == 200:
-                    data: dict[str, Any] = r.json() if r.content else {}
+                    try:
+                        data: dict[str, Any] = r.json() if r.content else {}
+                    except ValueError as e:  # e.g. an SSO / proxy HTML page instead of the REST API
+                        raise DatabricksError(
+                            f"{method} {ep}: response is not JSON (is the host a Databricks workspace URL?): {r.text[:200]}"
+                        ) from e
                     return data
                 last = f"{r.status_code}: {r.text[:300]}"
                 if r.status_code not in (429, 500, 502, 503, 504):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 
 # subprocess runs only the fixed `az account get-access-token` argv, behind FABRIC_ALLOW_AZ_CLI.
@@ -15,6 +16,8 @@ from app.core.exceptions import FabricError, ValidationFailed
 
 __all__ = ["FabricCredentials", "acquire_token"]
 
+_TENANT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$")
+
 
 @dataclass(frozen=True)
 class FabricCredentials:
@@ -25,6 +28,12 @@ class FabricCredentials:
     use_az_cli: bool = False
 
     def __post_init__(self) -> None:
+        # The tenant goes into the authority URL path: a GUID or a domain, nothing that could add path segments.
+        if self.tenant_id and not _TENANT.match(self.tenant_id):
+            raise ValidationFailed(
+                "tenant_id must be a directory GUID or a domain like contoso.onmicrosoft.com",
+                field="target.credentials.tenant_id",
+            )
         sp = self.tenant_id and self.client_id and self.client_secret
         if not (self.access_token or sp or self.use_az_cli):
             raise ValidationFailed(
@@ -60,7 +69,12 @@ def acquire_token(
             raise FabricError(f"Entra ID token request failed: {e}") from e
         if r.status_code != 200:
             raise FabricError(f"Entra ID token request failed ({r.status_code}): {r.text[:300]}")
-        tok = r.json().get("access_token")
+        try:
+            tok = r.json().get("access_token")
+        except ValueError as e:
+            raise FabricError(
+                f"Entra ID response is not JSON (check tenant_id): {r.text[:200]}"
+            ) from e
         if not tok:
             raise FabricError("Entra ID response had no access_token")
         return str(tok)

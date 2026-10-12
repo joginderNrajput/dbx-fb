@@ -256,3 +256,17 @@ def test_migration_with_selection_does_not_crawl(client: TestClient) -> None:
         },
     )
     assert r.status_code == 400 and r.json()["error"]["field"] == "source.selection.notebook"
+
+
+def test_placeholder_tenant_is_a_422_not_a_500(client: TestClient) -> None:
+    r = client.post(
+        "/api/v1/connections/fabric/test",
+        json={
+            "credentials": {
+                "tenant_id": "<entra-tenant-id>",
+                "client_id": "c",
+                "client_secret": "s",
+            }
+        },
+    )
+    assert r.status_code == 422 and r.json()["error"]["field"] == "credentials"

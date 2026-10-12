@@ -260,3 +260,27 @@ def test_selection_fetches_only_picked_objects(settings: Settings) -> None:
     assert assess["source"]["inventory"] == "selection"
     w = " | ".join(assess["warnings"])
     assert "notebook /gone" in w and "job 99" in w and "table bad" in w
+
+
+def test_non_json_responses_are_upstream_errors(settings: Settings) -> None:
+    from app.core.exceptions import DatabricksError
+
+    with respx.mock() as router:
+        router.get(f"{HOST}/api/2.0/clusters/list").mock(
+            return_value=httpx.Response(200, text="<html>SSO</html>")
+        )
+        router.post(f"{HOST}/oidc/v1/token").mock(
+            return_value=httpx.Response(200, text="<html>SSO</html>")
+        )
+        with (
+            DatabricksClient(DatabricksCredentials(HOST, "dapi"), settings) as c,
+            pytest.raises(DatabricksError, match="not JSON"),
+        ):
+            c.list_clusters()
+        with (
+            DatabricksClient(
+                DatabricksCredentials(HOST, client_id="i", client_secret="s"), settings
+            ) as c,
+            pytest.raises(DatabricksError, match="not JSON"),
+        ):
+            c.list_clusters()

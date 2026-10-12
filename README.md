@@ -47,6 +47,7 @@ warehouses,catalogs,secret-scopes}` (credentials in `X-Databricks-*` headers) an
 - Brief for engineers and agents: [`CLAUDE.md`](CLAUDE.md)
 - **How to test locally without Docker:** [`docs/local-testing-guide.md`](docs/local-testing-guide.md)
 - **How to test with Docker:** [`docs/docker-testing-guide.md`](docs/docker-testing-guide.md)
+- **Copy-paste curl for every API:** [`docs/api-curl-reference.md`](docs/api-curl-reference.md)
 - Architecture: [`docs/architecture.md`](docs/architecture.md) · Runbook: [`docs/runbook.md`](docs/runbook.md) ·
   Security: [`docs/security-review.md`](docs/security-review.md) · Decisions: [`docs/adr/`](docs/adr/)
 - Project layout standard: [`docs/PROJECT_STRUCTURE_BLUEPRINT.md`](docs/PROJECT_STRUCTURE_BLUEPRINT.md)

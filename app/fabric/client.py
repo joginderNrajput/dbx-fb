@@ -60,8 +60,15 @@ class Fabric:
                     f"{method} {path} -> {r.status_code}: {r.text[:300]}",
                     details={"status": r.status_code},
                 )
-            js = r.json() if r.content else None
-            return r.status_code, dict(r.headers), js or {}
+            try:
+                js = r.json() if r.content else None
+            except (
+                ValueError
+            ) as e:  # an HTML error page from a proxy or gateway, not the Fabric API
+                raise FabricError(
+                    f"{method} {path} -> {r.status_code}: response is not JSON: {r.text[:200]}"
+                ) from e
+            return r.status_code, dict(r.headers), js if isinstance(js, dict) else {}
         raise FabricError(f"{method} {path}: throttled")
 
     def wait(self, headers: dict[str, str]) -> dict[str, Any]:

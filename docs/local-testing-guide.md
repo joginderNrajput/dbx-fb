@@ -105,6 +105,7 @@ curl -s localhost:8000/readyz           # storage ok; reports whether AI is conf
 ```
 
 Interactive API docs (try every endpoint from the browser): <http://localhost:8000/docs>.
+Every endpoint as a copy-paste curl command: [`api-curl-reference.md`](api-curl-reference.md).
 
 The rest of this guide uses these shell helpers:
 

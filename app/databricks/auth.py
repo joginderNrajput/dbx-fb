@@ -44,7 +44,10 @@ def access_token(creds: DatabricksCredentials, http: httpx.Client) -> str:
         raise DatabricksError(
             f"Databricks OAuth token request failed ({r.status_code}): {r.text[:200]}"
         )
-    tok = r.json().get("access_token")
+    try:
+        tok = r.json().get("access_token")
+    except ValueError as e:
+        raise DatabricksError(f"Databricks OAuth response is not JSON: {r.text[:200]}") from e
     if not tok:
         raise DatabricksError("Databricks OAuth response had no access_token")
     return str(tok)
