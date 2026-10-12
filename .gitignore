@@ -1,0 +1,32 @@
+# uv.lock is COMMITTED on purpose: it is the resolved dependency graph every machine and CI uses.
+
+# environments / secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage*
+
+# generated output (OUTPUT_DIR and CLI runs)
+output/
+migration_out/
+samples/
+
+# IDE
+.idea/workspace.xml
+.idea/shelf/
+.vscode/

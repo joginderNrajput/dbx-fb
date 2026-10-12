@@ -1,0 +1,25 @@
+# One container: the API runs migration jobs in-process (no queue, no database; ADR 0001).
+# Host flow (`make dev`) and Docker read the same .env and write to the same ./output folder.
+name: dbx2fabric-migration-service
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: ${DOCKER_EXTRAS:-ai}
+    image: dbx2fabric-app:local          # ONE shared tag: one build, no stale sibling images
+    env_file:
+      - path: .env
+        required: false                  # works before `cp .env.example .env`, with safe defaults
+    environment:
+      OUTPUT_DIR: /app/output            # container path; the host path is the volume below
+    volumes:
+      - ./output:/app/output
+      - ./app:/app/app:ro                # live code for --reload; remove for an immutable run
+    # --reload-dir /app/app: generated notebooks under /app/output never trigger a restart
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped

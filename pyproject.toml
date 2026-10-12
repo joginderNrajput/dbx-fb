@@ -1,0 +1,108 @@
+[project]
+name = "dbx2fabric-migration-service"
+version = "1.0.0"
+description = "Agentic FastAPI service that migrates Databricks workspaces and offline notebooks to Microsoft Fabric"
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Grouped by concern; see docs/adr for anything not listed in the spec.
+dependencies = [
+  # --- web ---
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "python-multipart>=0.0.12",   # notebook / zip / results.json uploads (spec §5.2)
+  "httpx>=0.28",                # ALL outbound HTTP (Databricks, Fabric, Entra ID)
+  # --- data contracts ---
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  # --- observability ---
+  "structlog>=24.4",
+  "prometheus-client>=0.21",
+  # --- security ---
+  "argon2-cffi>=23.1",          # API-key hashing (spec §8.1)
+  # --- cli ---
+  "typer>=0.15",
+]
+
+[project.optional-dependencies]
+# Claude powers the agent mode and the AI cell fixer (spec §6). The SDK is imported lazily
+# in app/agents/llm.py only, so a deployment without the extra still runs pipeline mode.
+ai = ["anthropic>=1.13"]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "pytest-cov>=6.0",
+  "respx>=0.22",                # httpx mocking for Databricks / Fabric / Entra ID
+  "mypy>=1.13",
+  "ruff>=0.8",
+  "bandit>=1.8",
+]
+
+[project.scripts]
+dbx2fabric = "app.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests"]
+# The original single-file tool is the reference implementation (spec §1.2), kept verbatim; the
+# fixtures are sample Databricks notebooks and golden output compared byte-for-byte.
+extend-exclude = ["dbx2fabric_migrate_v4.py", "tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC"]
+# The formatter owns line length. Conversion rules, regexes and advice strings stay on one line
+# so they can be grepped and diffed against the reference tool (ADR 0003).
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "ASYNC110", "ASYNC251"]   # tests poll job state on purpose
+"app/api/**" = ["B008"]   # FastAPI's Depends()/File() defaults are the idiom
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
+warn_unused_configs = true
+warn_redundant_casts = true
+exclude = ["dbx2fabric_migrate_v4\\.py"]
+
+# Strict where correctness is load-bearing and the code is deterministic.
+[[tool.mypy.overrides]]
+module = ["app.core.*", "app.schemas.*", "app.storage.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+check_untyped_defs = true
+no_implicit_reexport = true
+warn_return_any = true
+warn_unused_ignores = true
+strict_equality = true
+extra_checks = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "slow: requires live Databricks / Fabric / Anthropic credentials",
+  "integration: multi-component flows through the HTTP API (no external network)",
+]
+
+[tool.bandit]
+skips = ["B101"]   # assert guarding internal invariants; every other finding is a gate
+
+[tool.coverage.run]
+omit = ["dbx2fabric_migrate_v4.py"]

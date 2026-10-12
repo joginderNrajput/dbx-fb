@@ -1,0 +1,5 @@
+name: sales_dbt
+profile: sales
+models:
+  sales_dbt:
+    +file_format: delta

@@ -1,0 +1,12 @@
+{
+  "name": "nightly_sales",
+  "schedule": {"quartz_cron_expression": "0 30 2 * * ?", "timezone_id": "Asia/Kolkata", "pause_status": "UNPAUSED"},
+  "email_notifications": {"on_failure": ["data-team@example.com"]},
+  "tasks": [
+    {"task_key": "load", "notebook_task": {"notebook_path": "/Repos/team/etl/load_sales", "base_parameters": {"run_date": "{{job.start_time.iso_date}}", "env": "prod"}},
+     "timeout_seconds": 3600, "max_retries": 2, "min_retry_interval_millis": 60000},
+    {"task_key": "publish", "depends_on": [{"task_key": "load"}], "notebook_task": {"notebook_path": "/Repos/team/etl/publish"}},
+    {"task_key": "refresh_dash", "depends_on": [{"task_key": "publish"}], "sql_task": {"query": {"query_id": "abc"}}},
+    {"task_key": "notify", "depends_on": [{"task_key": "refresh_dash"}, {"task_key": "publish"}], "notebook_task": {"notebook_path": "/Repos/team/etl/notify"}}
+  ]
+}

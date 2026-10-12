@@ -1,0 +1,44 @@
+{
+  "notebook": {
+    "nbformat": 4,
+    "nbformat_minor": 5,
+    "cells": [
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "df = spark.table(\"lh_main.gold.daily_sales\")\n",
+          "df.write.mode(\"overwrite\").saveAsTable(\"lh_main.gold.daily_sales_published\")"
+        ]
+      }
+    ],
+    "metadata": {
+      "kernel_info": {
+        "name": "synapse_pyspark"
+      },
+      "kernelspec": {
+        "name": "synapse_pyspark",
+        "display_name": "Synapse PySpark"
+      },
+      "language_info": {
+        "name": "python"
+      },
+      "microsoft": {
+        "language": "python",
+        "language_group": "synapse_pyspark"
+      }
+    }
+  },
+  "todos": [],
+  "changes": {
+    "catalog 'main' -> lakehouse 'lh_main' (3-part names)": 2
+  },
+  "warnings": {
+    "WH-LANDING": [
+      2,
+      "Uses Warehouse-mapped tables (gold.daily_sales, gold.daily_sales_published): Spark reads/writes them in the Lakehouse; publish to the Warehouse with load_tables.sql after this notebook runs"
+    ]
+  }
+}

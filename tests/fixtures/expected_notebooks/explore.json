@@ -1,0 +1,83 @@
+{
+  "notebook": {
+    "nbformat": 4,
+    "nbformat_minor": 5,
+    "cells": [
+      {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+          "# Explore customers\n",
+          "Ad-hoc analysis."
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "import pandas as pd\n",
+          "df = spark.table(\"lh_main.silver.customers\").toPandas()\n",
+          "display(df.head())"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "%pip install great-expectations"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "# TODO[dbx2fabric:DBU-CONTEXT] Use notebookutils.runtime.context\n",
+          "ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()\n",
+          "user = ctx.userName().get()"
+        ]
+      }
+    ],
+    "metadata": {
+      "kernel_info": {
+        "name": "synapse_pyspark"
+      },
+      "kernelspec": {
+        "name": "synapse_pyspark",
+        "display_name": "Synapse PySpark"
+      },
+      "language_info": {
+        "name": "python"
+      },
+      "microsoft": {
+        "language": "python",
+        "language_group": "synapse_pyspark"
+      }
+    }
+  },
+  "todos": [
+    {
+      "rule": "DBU-CONTEXT",
+      "advice": "Use notebookutils.runtime.context",
+      "line": "ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()"
+    }
+  ],
+  "changes": {
+    "catalog 'main' -> lakehouse 'lh_main' (3-part names)": 1
+  },
+  "warnings": {
+    "ARROW": [
+      2,
+      "Arrow/pandas paths: pyarrow ships with Fabric Spark runtimes; verify version and config"
+    ],
+    "PIP-INSTALL": [
+      1,
+      "Move libraries to a Fabric Environment for repeatability"
+    ]
+  }
+}

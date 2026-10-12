@@ -1,0 +1,395 @@
+{
+  "summary": {
+    "readiness": 72,
+    "total_assets": 32
+  },
+  "assets": [
+    {
+      "type": "Notebook",
+      "name": "load_sales",
+      "location": "/Repos/team/etl/load_sales",
+      "meta": {
+        "language": "PYTHON"
+      },
+      "score": 60,
+      "bucket": "medium"
+    },
+    {
+      "type": "Notebook",
+      "name": "publish",
+      "location": "/Repos/team/etl/publish",
+      "meta": {
+        "language": "PYTHON"
+      }
+    },
+    {
+      "type": "Notebook",
+      "name": "explore",
+      "location": "/Users/ana@example.com/explore",
+      "meta": {
+        "language": "PYTHON"
+      }
+    },
+    {
+      "type": "Notebook",
+      "name": "report",
+      "location": "/Shared/report",
+      "meta": {
+        "language": "SQL"
+      }
+    },
+    {
+      "type": "Notebook",
+      "name": "missing_nb",
+      "location": "/Shared/missing_nb",
+      "meta": {
+        "language": "PYTHON"
+      }
+    },
+    {
+      "type": "Job",
+      "name": "nightly_sales",
+      "location": "job:1",
+      "meta": {
+        "job_id": 1,
+        "settings": {
+          "name": "nightly_sales",
+          "schedule": {
+            "quartz_cron_expression": "0 30 2 * * ?",
+            "timezone_id": "Asia/Kolkata",
+            "pause_status": "UNPAUSED"
+          },
+          "email_notifications": {
+            "on_failure": [
+              "data-team@example.com"
+            ]
+          },
+          "tasks": [
+            {
+              "task_key": "load",
+              "notebook_task": {
+                "notebook_path": "/Repos/team/etl/load_sales",
+                "base_parameters": {
+                  "run_date": "{{job.start_time.iso_date}}",
+                  "env": "prod"
+                }
+              },
+              "timeout_seconds": 3600,
+              "max_retries": 2,
+              "min_retry_interval_millis": 60000
+            },
+            {
+              "task_key": "publish",
+              "depends_on": [
+                {
+                  "task_key": "load"
+                }
+              ],
+              "notebook_task": {
+                "notebook_path": "/Repos/team/etl/publish"
+              }
+            },
+            {
+              "task_key": "refresh_dash",
+              "depends_on": [
+                {
+                  "task_key": "publish"
+                }
+              ],
+              "sql_task": {
+                "query": {
+                  "query_id": "abc"
+                }
+              }
+            },
+            {
+              "task_key": "notify",
+              "depends_on": [
+                {
+                  "task_key": "refresh_dash"
+                },
+                {
+                  "task_key": "publish"
+                }
+              ],
+              "notebook_task": {
+                "notebook_path": "/Repos/team/etl/notify"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Job",
+      "name": "dbt_nightly",
+      "location": "job:2",
+      "meta": {
+        "job_id": 2,
+        "settings": {
+          "name": "dbt_nightly",
+          "tasks": [
+            {
+              "task_key": "dbt",
+              "dbt_task": {
+                "commands": [
+                  "dbt build"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Job",
+      "name": "sql_only",
+      "location": "job:3",
+      "meta": {
+        "settings": {
+          "name": "sql_only",
+          "tasks": [
+            {
+              "task_key": "q",
+              "sql_task": {}
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Table/View",
+      "name": "main.bronze.sales_raw",
+      "location": "abfss://lake@acct.dfs.core.windows.net/bronze/sales_raw",
+      "meta": {
+        "table_type": "EXTERNAL",
+        "storage_location": "abfss://lake@acct.dfs.core.windows.net/bronze/sales_raw",
+        "format": "DELTA",
+        "partition_columns": [
+          "dt"
+        ]
+      }
+    },
+    {
+      "type": "Table/View",
+      "name": "main.bronze.events_json",
+      "location": "abfss://lake@acct.dfs.core.windows.net/bronze/events",
+      "meta": {
+        "table_type": "EXTERNAL",
+        "storage_location": "abfss://lake@acct.dfs.core.windows.net/bronze/events",
+        "format": "JSON"
+      }
+    },
+    {
+      "type": "Table/View",
+      "name": "main.gold.daily_sales",
+      "location": "abfss://uc@dbstorageabc.dfs.core.windows.net/__unitystorage/x",
+      "meta": {
+        "table_type": "MANAGED",
+        "storage_location": "abfss://uc@dbstorageabc.dfs.core.windows.net/__unitystorage/x",
+        "format": "DELTA"
+      }
+    },
+    {
+      "type": "Table/View",
+      "name": "main.silver.customers",
+      "location": "abfss://lake@acct.dfs.core.windows.net/silver/customers",
+      "meta": {
+        "table_type": "MANAGED",
+        "storage_location": "abfss://lake@acct.dfs.core.windows.net/silver/customers",
+        "format": "DELTA"
+      }
+    },
+    {
+      "type": "Table/View",
+      "name": "main.silver.v_active_customers",
+      "location": "main.silver.v_active_customers",
+      "meta": {
+        "table_type": "VIEW",
+        "view_definition": "SELECT * FROM main.silver.customers WHERE active"
+      }
+    },
+    {
+      "type": "Table/View",
+      "name": "main.gold.v_region",
+      "location": "main.gold.v_region",
+      "meta": {
+        "table_type": "VIEW",
+        "view_definition": "SELECT region FROM main.gold.daily_sales"
+      }
+    },
+    {
+      "type": "Table/View",
+      "name": "main.bronze.stream_tbl",
+      "location": "x",
+      "meta": {
+        "table_type": "STREAMING_TABLE"
+      }
+    },
+    {
+      "type": "Secret Scope",
+      "name": "kv-sales",
+      "location": "scope:kv-sales",
+      "meta": {
+        "scope": "kv-sales",
+        "keys": [
+          "sql-password",
+          "api-key"
+        ]
+      }
+    },
+    {
+      "type": "DBFS Mount",
+      "name": "/mnt/raw",
+      "location": "/mnt/raw",
+      "meta": {
+        "source": "abfss://raw@acct.dfs.core.windows.net/"
+      }
+    },
+    {
+      "type": "Cluster",
+      "name": "etl-cluster",
+      "location": "cluster:1",
+      "meta": {
+        "spark_version": "13.3.x-scala2.12",
+        "spark_conf": {
+          "spark.sql.shuffle.partitions": "64"
+        }
+      }
+    },
+    {
+      "type": "Library",
+      "name": "great-expectations",
+      "location": "lib",
+      "meta": {
+        "kind": "pypi",
+        "name": "great-expectations==0.18"
+      }
+    },
+    {
+      "type": "Library",
+      "name": "com.acme:util",
+      "location": "lib",
+      "meta": {
+        "kind": "maven",
+        "name": "com.acme:util:1.0"
+      }
+    },
+    {
+      "type": "Dashboard",
+      "name": "Sales KPIs",
+      "location": "dash:1",
+      "meta": {}
+    },
+    {
+      "type": "SQL Warehouse",
+      "name": "Shared WH",
+      "location": "wh:1",
+      "meta": {}
+    },
+    {
+      "type": "Function",
+      "name": "main.silver.clean_name",
+      "location": "fn",
+      "meta": {
+        "language": "SQL",
+        "input_params": [
+          {
+            "name": "s",
+            "type": "string"
+          }
+        ],
+        "return_type": "string",
+        "definition": "trim(lower(s))"
+      }
+    },
+    {
+      "type": "Function",
+      "name": "main.gold.margin",
+      "location": "fn",
+      "meta": {
+        "language": "SQL",
+        "input_params": [
+          {
+            "name": "rev",
+            "type": "double"
+          },
+          {
+            "name": "cost",
+            "type": "double"
+          }
+        ],
+        "return_type": "double",
+        "definition": "rev - cost"
+      }
+    },
+    {
+      "type": "Function",
+      "name": "main.silver.py_udf",
+      "location": "fn",
+      "meta": {
+        "language": "PYTHON"
+      }
+    },
+    {
+      "type": "SQL Query",
+      "name": "Top regions",
+      "location": "q:1",
+      "meta": {
+        "query_text": "SELECT * FROM main.gold.daily_sales LIMIT 10"
+      }
+    },
+    {
+      "type": "Connection",
+      "name": "crm_pg",
+      "location": "conn",
+      "meta": {
+        "connection_type": "POSTGRESQL"
+      }
+    },
+    {
+      "type": "Volume",
+      "name": "main.raw.landing",
+      "location": "abfss://lake@acct.dfs.core.windows.net/landing",
+      "meta": {
+        "storage_location": "abfss://lake@acct.dfs.core.windows.net/landing"
+      }
+    },
+    {
+      "type": "External Location",
+      "name": "lake",
+      "location": "abfss://lake@acct.dfs.core.windows.net/",
+      "meta": {
+        "url": "abfss://lake@acct.dfs.core.windows.net/"
+      }
+    },
+    {
+      "type": "Permission",
+      "name": "main.gold",
+      "location": "perm",
+      "meta": {
+        "securable": "main.gold",
+        "grants": [
+          {
+            "principal": "analysts",
+            "privileges": [
+              "SELECT"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "DLT Pipeline",
+      "name": "bronze_dlt",
+      "location": "dlt:1",
+      "meta": {}
+    },
+    {
+      "type": "Mystery",
+      "name": "unknown_thing",
+      "location": "?",
+      "meta": {}
+    }
+  ]
+}

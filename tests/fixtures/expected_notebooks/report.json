@@ -1,0 +1,81 @@
+{
+  "notebook": {
+    "nbformat": 4,
+    "nbformat_minor": 5,
+    "cells": [
+      {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+          "## Revenue report"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "%%sql\n",
+          "-- [dbx2fabric] removed: SET spark.databricks.delta.preview.enabled = true;"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "%%sql\n",
+          "CREATE OR REPLACE TEMP VIEW revenue AS\n",
+          "SELECT * FROM lh_main.gold.daily_sales VERSION AS OF 3;"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "%%sql\n",
+          "OPTIMIZE lh_main.gold.daily_sales ZORDER BY (region);"
+        ]
+      }
+    ],
+    "metadata": {
+      "kernel_info": {
+        "name": "synapse_pyspark"
+      },
+      "kernelspec": {
+        "name": "synapse_pyspark",
+        "display_name": "Synapse PySpark"
+      },
+      "language_info": {
+        "name": "python"
+      },
+      "microsoft": {
+        "language": "python",
+        "language_group": "synapse_pyspark"
+      }
+    }
+  },
+  "todos": [],
+  "changes": {
+    "Databricks-only SET removed": 1,
+    "catalog 'main' -> lakehouse 'lh_main' (3-part names)": 2
+  },
+  "warnings": {
+    "WH-LANDING": [
+      1,
+      "Uses Warehouse-mapped tables (gold.daily_sales): Spark reads/writes them in the Lakehouse; publish to the Warehouse with load_tables.sql after this notebook runs"
+    ],
+    "TIME-TRAVEL": [
+      1,
+      "Time travel: confirm Delta log retention after the data copy"
+    ],
+    "ZORDER": [
+      1,
+      "Prefer V-Order + OPTIMIZE in Fabric"
+    ]
+  }
+}

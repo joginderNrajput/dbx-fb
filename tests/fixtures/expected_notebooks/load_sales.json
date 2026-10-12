@@ -1,0 +1,163 @@
+{
+  "notebook": {
+    "nbformat": 4,
+    "nbformat_minor": 5,
+    "cells": [
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {
+          "tags": [
+            "parameters"
+          ]
+        },
+        "outputs": [],
+        "source": [
+          "run_date = \"2024-01-01\"\n",
+          "env = \"dev\""
+        ]
+      },
+      {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+          "# Load sales\n",
+          "Reads raw sales files and writes the bronze and gold tables."
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "# [dbx2fabric] widget 'run_date' -> parameter cell\n",
+          "# [dbx2fabric] widget 'env' -> parameter cell\n",
+          "# [dbx2fabric] run_date comes from the parameter cell\n",
+          "# [dbx2fabric] env comes from the parameter cell"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "%run setup"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "# [dbx2fabric] removed: spark.conf.set(\"spark.databricks.delta.optimizeWrite.enabled\", \"true\")\n",
+          "jdbc_password = notebookutils.credentials.getSecret(\"https://kv-sales.vault.azure.net/\", \"sql-password\")\n",
+          "raw = spark.read.format(\"csv\").option(\"header\", \"true\").load(\"Files/raw/sales/\" + run_date)\n",
+          "# TODO[dbx2fabric:DBU-MOUNT] Mounts are not supported: use OneLake shortcuts or abfss paths\n",
+          "dbutils.fs.mount(source=\"wasbs://raw@acct.blob.core.windows.net\", mount_point=\"/mnt/other\")\n",
+          "files = notebookutils.fs.ls(\"Files/raw/sales\")"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "raw.write.mode(\"overwrite\").saveAsTable(\"lh_main.bronze.sales_raw\")\n",
+          "gold = spark.table(\"lh_main.gold.daily_sales\")\n",
+          "# TODO[dbx2fabric:AUTOLOADER] No Auto Loader: use Structured Streaming file source, pipeline triggers or Eventstream\n",
+          "stream = spark.readStream.format(\"cloudFiles\").option(\"cloudFiles.format\", \"json\").load(\"Files/raw/events\")"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "%%sql\n",
+          "SELECT region, sum(amount) FROM lh_main.gold.daily_sales GROUP BY region"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "# TODO[dbx2fabric:MAGIC-SH-FS] Rewrite shell/%fs with notebookutils or Python\n",
+          "# ls -la /dbfs/tmp"
+        ]
+      },
+      {
+        "cell_type": "code",
+        "execution_count": null,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+          "result = notebookutils.notebook.run(\"publish\", 600, {\"run_date\": run_date})\n",
+          "notebookutils.notebook.exit(result)"
+        ]
+      }
+    ],
+    "metadata": {
+      "kernel_info": {
+        "name": "synapse_pyspark"
+      },
+      "kernelspec": {
+        "name": "synapse_pyspark",
+        "display_name": "Synapse PySpark"
+      },
+      "language_info": {
+        "name": "python"
+      },
+      "microsoft": {
+        "language": "python",
+        "language_group": "synapse_pyspark"
+      }
+    }
+  },
+  "todos": [
+    {
+      "rule": "DBU-MOUNT",
+      "advice": "Mounts are not supported: use OneLake shortcuts or abfss paths",
+      "line": "dbutils.fs.mount(source=\"wasbs://raw@acct.blob.core.windows.net\", mount_point=\"/mnt/other\")"
+    },
+    {
+      "rule": "AUTOLOADER",
+      "advice": "No Auto Loader: use Structured Streaming file source, pipeline triggers or Eventstream",
+      "line": "stream = spark.readStream.format(\"cloudFiles\").option(\"cloudFiles.format\", \"json\").load(\"Files/raw/events\")"
+    },
+    {
+      "rule": "MAGIC-SH-FS",
+      "advice": "Rewrite shell/%fs with notebookutils or Python",
+      "line": "ls -la /dbfs/tmp"
+    }
+  ],
+  "changes": {
+    "dbutils.widgets -> parameter cell": 2,
+    "dbutils.widgets.get -> parameter variable": 1,
+    "self-assignment removed (value comes from the parameter cell)": 2,
+    "%run path -> notebook name": 1,
+    "dbutils.secrets.get -> notebookutils.credentials.getSecret": 1,
+    "dbutils.fs -> notebookutils.fs": 1,
+    "mount /mnt/raw -> Files/raw": 3,
+    "Databricks-only Spark config removed": 1,
+    "catalog 'main' -> lakehouse 'lh_main' (3-part names)": 3,
+    "dbutils.notebook.run -> notebookutils.notebook.run": 1,
+    "dbutils.notebook.exit -> notebookutils.notebook.exit": 1
+  },
+  "warnings": {
+    "WH-LANDING": [
+      1,
+      "Uses Warehouse-mapped tables (gold.daily_sales): Spark reads/writes them in the Lakehouse; publish to the Warehouse with load_tables.sql after this notebook runs"
+    ],
+    "STREAMING": [
+      1,
+      "Structured Streaming: re-validate checkpoints, triggers, sinks"
+    ]
+  }
+}

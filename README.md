@@ -1,20 +1,47 @@
-# Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+# dbx2fabric — Databricks → Microsoft Fabric migration service
 
-# Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
+An agentic FastAPI service that migrates Databricks to Microsoft Fabric. Point it at a live
+workspace (Databricks credentials), or upload exported notebooks (`.ipynb`, `.py/.sql/.scala/.r`,
+or a `.zip`) when you don't want to share credentials. It inventories, plans and converts
+notebooks, jobs, tables, views, functions, secrets and more into Fabric artifacts. It also writes
+a runbook, a post-migration report and validation notebooks. Given Fabric credentials, it deploys
+everything to your workspace. In `agent` mode, Claude drives the migration and finishes the cells
+the rules engine could not convert.
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+Conversion behaviour is that of the reference tool `dbx2fabric_migrate_v4.py`, ported into the
+service and held to it by parity tests.
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
+## Quickstart
 
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+```bash
+cp .env.example .env          # local defaults: auth disabled, output in ./output
+make install                  # uv venv with runtime + ai + dev extras
+make dev                      # API on http://localhost:8000  (docs: /docs)
+# or with Docker:
+make up
+
+curl -F "files=@my_notebook.ipynb" -F 'config={}' http://localhost:8000/api/v1/migrations/upload
+```
+
+Then follow the job at `GET /api/v1/migrations/{id}`. When it finishes, open `/report` or
+download everything from `/download`.
+
+## Day-to-day
+
+| | |
+|---|---|
+| `make test` | full test suite (no network) |
+| `make lint type security` | static checks |
+| `make up` / `make down` | Docker stack |
+| `make cli-run SRC=./notebooks` | offline migration without the API |
+| `make hash-key` | create an API key for `API_KEY_HASHES` |
+
+## Documentation
+
+- Spec: [`dbx2fabric-migration-service.md`](dbx2fabric-migration-service.md)
+- Brief for engineers and agents: [`CLAUDE.md`](CLAUDE.md)
+- **How to test locally without Docker:** [`docs/local-testing-guide.md`](docs/local-testing-guide.md)
+- **How to test with Docker:** [`docs/docker-testing-guide.md`](docs/docker-testing-guide.md)
+- Architecture: [`docs/architecture.md`](docs/architecture.md) · Runbook: [`docs/runbook.md`](docs/runbook.md) ·
+  Security: [`docs/security-review.md`](docs/security-review.md) · Decisions: [`docs/adr/`](docs/adr/)
+- Project layout standard: [`docs/PROJECT_STRUCTURE_BLUEPRINT.md`](docs/PROJECT_STRUCTURE_BLUEPRINT.md)

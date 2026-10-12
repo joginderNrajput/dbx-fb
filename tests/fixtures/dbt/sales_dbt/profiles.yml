@@ -1,0 +1,5 @@
+sales:
+  target: dev
+  outputs:
+    dev:
+      type: databricks
