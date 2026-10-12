@@ -81,8 +81,13 @@ patterns (streaming, CDF, time travel, Arrow, JDBC…) are counted as warnings.
 
 ### 3.3 Jobs → Data Pipelines
 Notebook tasks become `TridentNotebook` activities (dependencies, retries, timeouts, base
-parameters). Other task types are reported as omitted. Quartz cron becomes a Fabric schedule
-(Cron/Daily/Weekly) where possible.
+parameters). Quartz cron becomes a Fabric schedule (Cron/Daily/Weekly) where possible.
+Service extensions (ADR 0003 #9): `run_job_task` on a job that is part of the same migration
+becomes an `ExecutePipeline` activity (`pipeline.referenceName = @@PL:<pipeline>@@`, resolved to the
+item id at deploy, `waitOnCompletion: true`, job parameters passed); `for_each_task` over a literal
+JSON array with a notebook (or migrated run-job) inner task becomes a `ForEach` (`@json('[…]')`,
+`batchCount` = concurrency, `{{input}}` → `@{item()}`). Other task types (condition, SQL, Python
+script, wheel, JAR, DLT, dynamic for-each inputs) are reported as omitted.
 
 ### 3.4 Mapping
 Keys and defaults: `app/migration/mapping.py::DEFAULT_MAPPING`. The initial mapping is derived
@@ -191,9 +196,14 @@ without starting a migration.
 
 ### 5.5 Deploy — `options.deploy` or `POST /migrations/{id}/deploy`
 Runs preflight first and stops on errors unless forced. Ensures lakehouses (schemas enabled),
-Warehouse and SQL database, then notebooks (with default lakehouse), shortcuts (needs
-`adls_connection_id`), pipelines (notebook ids resolved; notebooks outside the migration must
-already exist) and schedules. Re-running updates existing items instead of creating duplicates.
+Warehouse and SQL database, then the Environment (`env_<lakehouse_default>`: `environment.yml`
+from cluster PyPI libraries imported via `staging/libraries/importExternalLibraries`, then
+`staging/publish?beta=false`), notebooks (default lakehouse, and the Environment in
+`metadata.dependencies.environment`; retried without it if Fabric rejects it), shortcuts (needs
+`adls_connection_id`), pipelines in dependency order (invoked pipelines first; notebook and
+pipeline ids resolved; ones outside the migration must already exist) and schedules (an existing
+schedule is updated, never duplicated). `only` kinds: `environment`, `notebook`, `shortcuts`,
+`pipeline`. Re-running updates existing items instead of creating duplicates.
 Per-item failures are recorded on the item.
 
 Inspection: `GET /migrations`, `/{id}`, `/{id}/items`, `/{id}/preflight`, `/{id}/report`,
@@ -217,6 +227,12 @@ name a resource. Same host guards and dev env fallback as §5.1.
 | `/databricks/warehouses` | SQL warehouses (also for `source.warehouse_id`) | `warehouses` ← `id` |
 | `/databricks/catalogs`, `/catalogs/{c}/schemas`, `/catalogs/{c}/schemas/{s}/tables` | Unity Catalog | `tables` ← `full_name` (a schema = all its tables) |
 | `/databricks/secret-scopes` | scopes and key names | `secret_scopes` ← `name` |
+| `/databricks/catalogs/{c}/schemas/{s}/volumes` · `/functions` · `/models` | UC volumes, functions, registered models | `volumes` / `functions` / `models` ← `id` (full name; `catalog.schema` = all) |
+| `/databricks/queries` · `/alerts` · `/dashboards` | SQL queries, SQL alerts, AI/BI (Lakeview) dashboards | `queries` / `alerts` / `dashboards` ← `id` |
+| `/databricks/serving-endpoints` · `/repos` | model serving endpoints, Git folders | `serving_endpoints` / `repos` ← `id` |
+| `/databricks/external-locations` · `/connections` | UC external locations, federation connections (endpoint options only) | `external_locations` / `connections` ← `id` |
+| `/databricks/libraries` | cluster libraries (migrated with their cluster) | `clusters` ← `meta.clusters` |
+| `/databricks/workspace-files?paths=` | non-notebook workspace files | `workspace_files` ← `id` (path) |
 | `/databricks/inventory?path=&catalog=&schema=&include_*=` | everything, in assessment format | send as `assessment` |
 | `/fabric/workspaces`, `/fabric/workspaces/{id or name}/lakehouses`, `/…/items?type=` | Fabric targets | `target.workspace_*`, `target.lakehouse` |
 
@@ -241,6 +257,12 @@ shortcut-served tables skipped):
 4. Its results file updates the ledger: equal counts → `migrated` with the validation attached;
    otherwise `partial`. Then `create_views_<lakehouse>` runs so views exist over the loaded tables.
 Tables above `DATA_COPY_MAX_ROWS` are skipped with a reason. Failures are per table.
+
+Files: Unity Catalog volumes that no shortcut serves (Databricks-managed storage, non-ADLS, or no
+`adls_connection_id`) are walked with the Files API (`/api/2.0/fs/directories`, `/fs/files`) and
+written to `Files/<schema>_<volume>/`; workspace files go to `Files/workspace_files/<path>`.
+Bounded by `FILE_COPY_MAX_FILES`, `FILE_COPY_MAX_FILE_MB`, `FILE_COPY_MAX_TOTAL_MB`; the summary is
+`data_copy.files`.
 
 ### 5.6 Single-asset conversion
 `POST /convert/notebook` (multipart file, optional mapping/catalogs, `download=true` returns the

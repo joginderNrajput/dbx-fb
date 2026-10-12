@@ -1,6 +1,6 @@
 # API curl reference
 
-Copy-paste curl commands for **every** endpoint of the service (41 routes). Set the variables in
+Copy-paste curl commands for **every** endpoint of the service (53 routes). Set the variables in
 §0 once per shell (replace each `<...>` placeholder; the quotes keep the block pasteable even
 before you do). Every command below reads them.
 
@@ -213,11 +213,41 @@ curl -s -X POST $API/databricks/secret-scopes -H "X-API-Key: $API_KEY" -H 'Conte
 {"credentials": $DBX_CREDS}
 EOF
 
-# Everything at once, in the engine's assessment format (saved to send as "assessment" in §5.4)
+# Unity Catalog volumes / functions / registered models of a schema (id = full name)
+for kind in volumes functions models; do
+curl -s -X POST $API/databricks/catalogs/$DBX_CATALOG/schemas/$DBX_SCHEMA/$kind -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
+{"credentials": $DBX_CREDS}
+EOF
+done
+
+# SQL queries, SQL alerts, AI/BI dashboards, serving endpoints, Git folders, external locations,
+# connections (optional case-insensitive name filter)
+for kind in queries alerts dashboards serving-endpoints repos external-locations connections; do
+curl -s -X POST $API/databricks/$kind -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
+{"credentials": $DBX_CREDS, "name": null}
+EOF
+done
+
+# Cluster libraries (they migrate with their cluster: select the cluster id)
+curl -s -X POST $API/databricks/libraries -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
+{"credentials": $DBX_CREDS}
+EOF
+
+# Non-notebook workspace files under folders (.py modules, configs, ...)
+curl -s -X POST $API/databricks/workspace-files -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
+{"credentials": $DBX_CREDS, "paths": ["$DBX_PATH"], "limit": 1000}
+EOF
+
+# Everything at once, in the engine's assessment format (saved to send as "assessment" in §5.4).
+# Every include_* flag defaults to true; set the ones you do not want to false.
 curl -s -X POST $API/databricks/inventory -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' -o inventory.json --data @- <<EOF
 {"credentials": $DBX_CREDS, "workspace_paths": ["$DBX_PATH"], "catalogs": ["$DBX_CATALOG"], "schemas": ["$DBX_SCHEMA"],
  "include_jobs": true, "include_tables": true, "include_secret_scopes": true,
- "include_clusters": true, "include_pipelines": true, "include_warehouses": true}
+ "include_clusters": true, "include_pipelines": true, "include_warehouses": true,
+ "include_volumes": true, "include_functions": true, "include_models": true,
+ "include_sql_assets": true, "include_external_locations": true, "include_connections": true,
+ "include_serving_endpoints": true, "include_repos": true, "include_libraries": true,
+ "include_workspace_files": true}
 EOF
 python3 -c 'import json;print(json.load(open("inventory.json")).get("summary"))'
 ```
@@ -270,7 +300,18 @@ curl -s -X POST $API/migrations -H "X-API-Key: $API_KEY" -H 'Content-Type: appli
       "pipelines": [],
       "warehouses": [],
       "tables": ["$DBX_CATALOG.$DBX_SCHEMA"],
-      "secret_scopes": []
+      "secret_scopes": [],
+      "volumes": ["$DBX_CATALOG.$DBX_SCHEMA"],
+      "functions": ["$DBX_CATALOG.$DBX_SCHEMA"],
+      "models": [],
+      "queries": [],
+      "alerts": [],
+      "dashboards": [],
+      "serving_endpoints": [],
+      "repos": [],
+      "external_locations": [],
+      "connections": [],
+      "workspace_files": []
     }
   },
   "mapping": {"keyvault_url_default": "https://<your-vault>.vault.azure.net/"}
@@ -431,7 +472,8 @@ curl -s $API/migrations/$JOB_ID/download -H "X-API-Key: $API_KEY" -o migration.z
 Run these one at a time: while a deploy job runs, validation / results calls return `409`.
 
 ```bash
-# Deploy (or re-deploy) a finished migration; credentials travel with this request only
+# Deploy (or re-deploy) a finished migration; credentials travel with this request only.
+# "only" picks kinds: environment, notebook, shortcuts, pipeline (empty = all)
 curl -s -X POST $API/migrations/$JOB_ID/deploy -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
 {
   "target": {"workspace_name": "$FAB_WS_NAME", "lakehouse": "$FAB_LAKEHOUSE", "credentials": $FAB_CREDS},
@@ -442,7 +484,7 @@ EOF
 ```
 
 ```bash
-# Deploy everything + copy table data afterwards (Databricks credentials again)
+# Deploy everything + copy table data, volume files and workspace files (Databricks credentials again)
 curl -s -X POST $API/migrations/$JOB_ID/deploy -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' --data @- <<EOF | pp
 {
   "target": {"workspace_name": "$FAB_WS_NAME", "lakehouse": "$FAB_LAKEHOUSE", "credentials": $FAB_CREDS},

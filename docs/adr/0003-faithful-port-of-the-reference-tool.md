@@ -26,4 +26,12 @@ in `tests/unit/conversion/test_parity.py`. Deliberate deviations (the complete l
    schema-enabled, and `options.copy_data` (spec §5.9) moves table data, which the reference
    tool left to generated notebooks.
 
+9. Additions for objects the reference tool only reported (none changes the artifacts the
+   parity test compares): live discovery of every routed component kind plus "Workspace File"
+   (manual note, copied by `copy_data`); `run_job_task` → `ExecutePipeline` and literal
+   `for_each_task` → `ForEach` when the referenced jobs are in the same migration
+   (`convert_job(..., job_refs)`; without `job_refs` the output is the reference's); deploy
+   publishes a Fabric Environment from `environment.yml`, orders pipelines by Execute Pipeline
+   references and updates existing schedules; `copy_data` copies volume and workspace files.
+
 Consequences: any behaviour change must update the parity test or this list.

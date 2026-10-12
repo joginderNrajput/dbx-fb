@@ -21,7 +21,7 @@ How to work:
 3. Items you cannot finish (secrets, credentials, dashboards, DLT redesigns) stay as they are; use record_result only when you have new information (for example a deliberate decision to leave something not migrated), never to claim work you did not do. Never record "migrated": that requires validation in Fabric.
 4. run_preflight. Fix errors you can fix (update_mapping + plan_migration + convert_assets when a mapping value is wrong).
 5. Call deploy_to_fabric only if get_job_context says deploy_requested is true, Fabric credentials are present and preflight has no errors.
-5b. If get_job_context says copy_data_requested is true, call copy_data_to_fabric after deploying (or after convert_assets when not deploying). It copies table data, validates row counts and creates views.
+5b. If get_job_context says copy_data_requested is true, call copy_data_to_fabric after deploying (or after convert_assets when not deploying). It copies volume and workspace files and table data, validates row counts and creates views.
 6. Call finish with a short summary for the operator: what was migrated, what needs testing, what needs manual work and why.
 
 Never invent credentials, workspace ids, Key Vault URLs or connection ids. Keep tool calls purposeful; you have a limited number of turns."""
