@@ -22,7 +22,23 @@ from app.api.deps import get_settings_dep
 from app.core.config import Settings
 from app.core.exceptions import ValidationFailed
 from app.databricks.client import DatabricksClient
-from app.databricks.discovery import SYSTEM_CATALOGS, DiscoveryOptions, discover, list_notebooks
+from app.databricks.discovery import (
+    SYSTEM_CATALOGS,
+    DiscoveryOptions,
+    alert_asset,
+    connection_asset,
+    dashboard_asset,
+    discover,
+    external_location_asset,
+    function_asset,
+    library_assets,
+    list_notebooks,
+    model_asset,
+    query_asset,
+    repo_asset,
+    serving_endpoint_asset,
+    volume_asset,
+)
 from app.fabric.auth import acquire_token
 from app.fabric.client import Fabric
 from app.orchestrator.service import build_databricks_credentials, build_fabric_credentials
@@ -36,6 +52,7 @@ from app.schemas.browse import (
     FabricWorkspacesBrowseIn,
     InventoryBrowseIn,
     JobsBrowseIn,
+    NameFilterBrowseIn,
     NotebooksBrowseIn,
     PipelinesBrowseIn,
     WorkspaceBrowseIn,
@@ -308,6 +325,142 @@ def browse_secret_scopes(body: DatabricksBrowseIn, settings: Cfg) -> BrowseList:
     return _list(items, "secret_scopes", "name")
 
 
+def _assets(
+    assets: list[dict[str, Any]], key: str, id_field: str, name: str | None = None
+) -> BrowseList:
+    """Items built by the same asset builders discovery uses, plus an ``id`` (``meta[id_field]``,
+    else the asset name) that goes into ``source.selection.<key>``."""
+    items = [
+        {"id": str(a["meta"].get(id_field) or a["name"]), **a}
+        for a in assets
+        if _contains(a["name"], name)
+    ]
+    return _list(items, key, "id")
+
+
+def _schema_objects(
+    kind: str, catalog: str, schema: str, body: DatabricksBrowseIn, settings: Settings
+) -> BrowseList:
+    with _dbx(body, settings) as c:
+        iterate, build = {
+            "volumes": (c.iter_volumes, volume_asset),
+            "functions": (c.iter_functions, function_asset),
+            "models": (c.iter_models, model_asset),
+        }[kind]
+        return _assets([build(x) for x in iterate(catalog, schema)], kind, "name")
+
+
+@databricks_router.post("/catalogs/{catalog}/schemas/{schema}/volumes", response_model=BrowseList)
+def browse_volumes(
+    catalog: str, schema: str, body: DatabricksBrowseIn, settings: Cfg
+) -> BrowseList:
+    """Unity Catalog volumes (-> lakehouse Files: shortcut for external, copy for managed)."""
+    return _schema_objects("volumes", catalog, schema, body, settings)
+
+
+@databricks_router.post("/catalogs/{catalog}/schemas/{schema}/functions", response_model=BrowseList)
+def browse_functions(
+    catalog: str, schema: str, body: DatabricksBrowseIn, settings: Cfg
+) -> BrowseList:
+    """UC functions (scalar SQL -> Spark function or Warehouse T-SQL; others manual)."""
+    return _schema_objects("functions", catalog, schema, body, settings)
+
+
+@databricks_router.post("/catalogs/{catalog}/schemas/{schema}/models", response_model=BrowseList)
+def browse_models(catalog: str, schema: str, body: DatabricksBrowseIn, settings: Cfg) -> BrowseList:
+    """UC registered models (-> Fabric ML model; artifacts re-registered manually)."""
+    return _schema_objects("models", catalog, schema, body, settings)
+
+
+@databricks_router.post("/queries", response_model=BrowseList)
+def browse_queries(body: NameFilterBrowseIn, settings: Cfg) -> BrowseList:
+    """Saved SQL queries (-> cells of the Migrated_SQL_Queries notebook)."""
+    with _dbx(body, settings) as c:
+        return _assets([query_asset(q) for q in c.iter_queries()], "queries", "query_id", body.name)
+
+
+@databricks_router.post("/alerts", response_model=BrowseList)
+def browse_alerts(body: NameFilterBrowseIn, settings: Cfg) -> BrowseList:
+    """SQL alerts (-> Fabric Activator; manual)."""
+    with _dbx(body, settings) as c:
+        return _assets([alert_asset(a) for a in c.iter_alerts()], "alerts", "alert_id", body.name)
+
+
+@databricks_router.post("/dashboards", response_model=BrowseList)
+def browse_dashboards(body: NameFilterBrowseIn, settings: Cfg) -> BrowseList:
+    """AI/BI (Lakeview) dashboards (-> Power BI report; manual)."""
+    with _dbx(body, settings) as c:
+        return _assets(
+            [dashboard_asset(d) for d in c.iter_dashboards()],
+            "dashboards",
+            "dashboard_id",
+            body.name,
+        )
+
+
+@databricks_router.post("/serving-endpoints", response_model=BrowseList)
+def browse_serving_endpoints(body: NameFilterBrowseIn, settings: Cfg) -> BrowseList:
+    """Model serving endpoints (-> Azure ML / AI Foundry; manual)."""
+    with _dbx(body, settings) as c:
+        return _assets(
+            [serving_endpoint_asset(e) for e in c.list_serving_endpoints()],
+            "serving_endpoints",
+            "name",
+            body.name,
+        )
+
+
+@databricks_router.post("/repos", response_model=BrowseList)
+def browse_repos(body: NameFilterBrowseIn, settings: Cfg) -> BrowseList:
+    """Git folders (-> Fabric workspace Git integration; manual). Notebooks inside them are
+    migrated through selection.notebooks with the repo path."""
+    with _dbx(body, settings) as c:
+        return _assets([repo_asset(r) for r in c.iter_repos()], "repos", "repo_id", body.name)
+
+
+@databricks_router.post("/external-locations", response_model=BrowseList)
+def browse_external_locations(body: NameFilterBrowseIn, settings: Cfg) -> BrowseList:
+    """UC external locations (-> ADLS Gen2 connection used by OneLake shortcuts)."""
+    with _dbx(body, settings) as c:
+        return _assets(
+            [external_location_asset(e) for e in c.iter_external_locations()],
+            "external_locations",
+            "name",
+            body.name,
+        )
+
+
+@databricks_router.post("/connections", response_model=BrowseList)
+def browse_connections(body: NameFilterBrowseIn, settings: Cfg) -> BrowseList:
+    """Lakehouse Federation connections (endpoint options only; credentials are never returned)."""
+    with _dbx(body, settings) as c:
+        return _assets(
+            [connection_asset(cn) for cn in c.iter_connections()], "connections", "name", body.name
+        )
+
+
+@databricks_router.post("/libraries", response_model=BrowseList)
+def browse_libraries(body: DatabricksBrowseIn, settings: Cfg) -> BrowseList:
+    """Libraries installed on clusters (-> Fabric Environment). They are migrated with the
+    cluster they belong to: select the cluster under selection.clusters."""
+    with _dbx(body, settings) as c:
+        items = library_assets(c.all_cluster_libraries())
+    for it in items:
+        it["id"] = it["name"]
+    return _list(items, "clusters", "meta.clusters")
+
+
+@databricks_router.post("/workspace-files", response_model=BrowseList)
+def browse_workspace_files(body: NotebooksBrowseIn, settings: Cfg) -> BrowseList:
+    """Non-notebook workspace files (.py modules, configs, ...) under the given folders."""
+    warnings: list[str] = []
+    files: list[dict[str, Any]] = []
+    with _dbx(body, settings) as c:
+        list_notebooks(c, body.paths, settings.DATABRICKS_MAX_NOTEBOOKS, warnings.append, files)
+    items = [{"id": f["location"], **f} for f in files]
+    return _list(items, "workspace_files", "id", limit=body.limit, warnings=warnings)
+
+
 @databricks_router.post("/inventory")
 def browse_inventory(body: InventoryBrowseIn, settings: Cfg) -> dict[str, Any]:
     """Everything at once, in the engine's assessment format. Send the response (or a filtered
@@ -319,12 +472,7 @@ def browse_inventory(body: InventoryBrowseIn, settings: Cfg) -> dict[str, Any]:
                 workspace_paths=body.workspace_paths,
                 catalogs=body.catalogs,
                 schemas=body.schemas,
-                include_jobs=body.include_jobs,
-                include_tables=body.include_tables,
-                include_secret_scopes=body.include_secret_scopes,
-                include_clusters=body.include_clusters,
-                include_pipelines=body.include_pipelines,
-                include_warehouses=body.include_warehouses,
+                **body.flags(),
                 max_notebooks=settings.DATABRICKS_MAX_NOTEBOOKS,
             ),
         )

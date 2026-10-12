@@ -106,6 +106,8 @@ MANUAL_NOTES = {
     "Repo": "Connect the Git repository to the Fabric workspace (Git integration)",
     "Credential": "Create a workspace identity / service principal and Fabric connections; secrets are not exportable",
     "Function": "Python/table-valued function, or signature missing (re-run the assessor v4): recreate as a PySpark UDF in a notebook or a Warehouse T-SQL function",
+    # not in the reference tool (live discovery only, ADR 0003)
+    "Workspace File": "Workspace file: copied to the lakehouse Files/workspace_files folder when data copy runs; otherwise upload it to the lakehouse Files section or the notebook's built-in resources",
 }
 
 CONN_REASON = "adls_connection_id not set: create an ADLS Gen2 connection in Fabric and put its id in mapping.json (shortcut spec is ready)"

@@ -168,6 +168,100 @@ def mock_workspace(router: respx.MockRouter) -> None:
     router.get(f"{HOST}/api/2.0/secrets/list").mock(
         return_value=httpx.Response(200, json={"secrets": [{"key": "pw"}]})
     )
+    mock_extra_objects(router)
+
+
+VOLUME = {
+    "name": "raw",
+    "full_name": "main.gold.raw",
+    "volume_type": "EXTERNAL",
+    "storage_location": "abfss://c@a.dfs.core.windows.net/raw",
+}
+FUNCTION = {
+    "name": "add_tax",
+    "full_name": "main.gold.add_tax",
+    "routine_body": "SQL",
+    "routine_definition": "x * 1.2",
+    "data_type": "DOUBLE",
+    "full_data_type": "DOUBLE",
+    "input_params": {"parameters": [{"name": "x", "type_text": "double"}]},
+}
+MODEL = {"name": "churn", "full_name": "main.gold.churn", "storage_location": "abfss://m"}
+
+
+def mock_extra_objects(router: respx.MockRouter) -> None:
+    """Every other component kind discovery inventories (volumes ... libraries, workspace files)."""
+
+    def ok(**body: object) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    uc = f"{HOST}/api/2.1/unity-catalog"
+    router.get(f"{uc}/volumes").mock(return_value=ok(volumes=[VOLUME]))
+    router.get(f"{uc}/volumes/main.gold.raw").mock(return_value=ok(**VOLUME))
+    router.get(f"{uc}/functions").mock(return_value=ok(functions=[FUNCTION]))
+    router.get(f"{uc}/functions/main.gold.add_tax").mock(return_value=ok(**FUNCTION))
+    router.get(f"{uc}/models").mock(return_value=ok(registered_models=[MODEL]))
+    router.get(f"{uc}/external-locations").mock(
+        return_value=ok(
+            external_locations=[{"name": "landing", "url": "abfss://l@a.dfs.core.windows.net/"}]
+        )
+    )
+    router.get(f"{uc}/connections").mock(
+        return_value=ok(
+            connections=[
+                {
+                    "name": "pg",
+                    "connection_type": "POSTGRESQL",
+                    "options": {"host": "db", "port": "5432", "password": "never-copied"},
+                }
+            ]
+        )
+    )
+    router.get(f"{HOST}/api/2.0/sql/queries").mock(
+        return_value=ok(
+            results=[{"id": "q1", "display_name": "top sales", "query_text": "SELECT 1"}]
+        )
+    )
+    router.get(f"{HOST}/api/2.0/sql/queries/q1").mock(
+        return_value=ok(id="q1", display_name="top sales", query_text="SELECT 1")
+    )
+    router.get(f"{HOST}/api/2.0/sql/alerts").mock(
+        return_value=ok(results=[{"id": "a1", "display_name": "late load", "query_id": "q1"}])
+    )
+    router.get(f"{HOST}/api/2.0/lakeview/dashboards").mock(
+        return_value=ok(dashboards=[{"dashboard_id": "d1", "display_name": "Sales"}])
+    )
+    router.get(f"{HOST}/api/2.0/serving-endpoints").mock(
+        return_value=ok(
+            endpoints=[
+                {
+                    "name": "churn-ep",
+                    "config": {"served_entities": [{"entity_name": "main.gold.churn"}]},
+                }
+            ]
+        )
+    )
+    router.get(f"{HOST}/api/2.0/repos").mock(
+        return_value=ok(repos=[{"id": 5, "path": "/Repos/team", "url": "https://git/x"}])
+    )
+    router.get(f"{HOST}/api/2.0/libraries/all-cluster-statuses").mock(
+        return_value=ok(
+            statuses=[
+                {
+                    "cluster_id": "c1",
+                    "library_statuses": [
+                        {"library": {"pypi": {"package": "great-expectations==1.0"}}},
+                        {"library": {"maven": {"coordinates": "com.x:y:1.0"}}},
+                    ],
+                }
+            ]
+        )
+    )
+    router.get(f"{HOST}/api/2.0/libraries/cluster-status").mock(
+        return_value=ok(
+            library_statuses=[{"library": {"pypi": {"package": "great-expectations==1.0"}}}]
+        )
+    )
 
 
 def test_discover_builds_assessment(settings: Settings) -> None:
@@ -186,6 +280,14 @@ def test_discover_builds_assessment(settings: Settings) -> None:
     assert any(
         "secret scopes" in w for w in assess["warnings"]
     )  # partial failure -> warning, not error
+    fn = by[("Function", "main.gold.add_tax")]["meta"]
+    assert fn["language"] == "SQL" and fn["input_params"] == [{"name": "x", "type": "double"}]
+    assert by[("Volume", "main.gold.raw")]["meta"]["storage_location"].startswith("abfss://")
+    assert by[("Connection", "pg")]["meta"]["options"] == {"host": "db", "port": "5432"}
+    assert by[("SQL Query", "top sales")]["meta"]["query_text"] == "SELECT 1"
+    assert by[("Library", "great-expectations==1.0")]["meta"]["kind"] == "pypi"
+    for kind in ("ML Model", "External Location", "Alert", "Dashboard", "Serving Endpoint", "Repo"):
+        assert kind in assess["summary"]["by_type"], kind
 
 
 def test_export_and_oauth(settings: Settings) -> None:
@@ -229,6 +331,9 @@ def test_selection_fetches_only_picked_objects(settings: Settings) -> None:
         warehouses=["wh-run"],
         tables=["main.gold.sales", "main.gold", "bad"],
         secret_scopes=["kv"],
+        volumes=["main.gold.raw"],
+        functions=["main.gold"],
+        queries=["q1"],
     )
     with respx.mock(assert_all_called=False) as router:
         mock_workspace(router)
@@ -256,6 +361,9 @@ def test_selection_fetches_only_picked_objects(settings: Settings) -> None:
     assert (
         sum(1 for a in assess["assets"] if a["name"] == "main.gold.sales") == 1
     )  # table + schema selection deduped
+    assert ("Volume", "main.gold.raw") in by and ("Function", "main.gold.add_tax") in by
+    assert ("SQL Query", "top sales") in by
+    assert ("Library", "great-expectations==1.0") in by  # pulled in with cluster c1
     assert not catalogs_called and not jobs_list_called  # no crawl
     assert assess["source"]["inventory"] == "selection"
     w = " | ".join(assess["warnings"])

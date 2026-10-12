@@ -317,3 +317,32 @@ def test_migration_with_selection_and_service_principal(client: TestClient) -> N
         },
     )
     assert r.status_code == 400 and r.json()["error"]["field"] == "source.selection.notebook"
+
+
+def test_browse_every_component_kind(client: TestClient) -> None:
+    """Each kind discovery inventories has a browse list whose ids feed source.selection."""
+    with respx.mock(assert_all_called=False) as router:
+        mock_workspace(router)
+        cases = {
+            "catalogs/main/schemas/gold/volumes": ("volumes", "main.gold.raw"),
+            "catalogs/main/schemas/gold/functions": ("functions", "main.gold.add_tax"),
+            "catalogs/main/schemas/gold/models": ("models", "main.gold.churn"),
+            "queries": ("queries", "q1"),
+            "alerts": ("alerts", "a1"),
+            "dashboards": ("dashboards", "d1"),
+            "serving-endpoints": ("serving_endpoints", "churn-ep"),
+            "repos": ("repos", "5"),
+            "external-locations": ("external_locations", "landing"),
+            "connections": ("connections", "pg"),
+            "libraries": ("clusters", "great-expectations==1.0"),
+        }
+        for path, (key, first_id) in cases.items():
+            r = client.post(f"/api/v1/databricks/{path}", json=dbx())
+            assert r.status_code == 200, (path, r.text)
+            body = r.json()
+            assert body["selection_key"] == key, path
+            assert body["items"][0]["id"] == first_id, path
+        conn = client.post("/api/v1/databricks/connections", json=dbx()).json()["items"][0]
+        assert "password" not in str(conn)  # only endpoint options are listed
+        inv = client.post("/api/v1/databricks/inventory", json=dbx(include_repos=False)).json()
+        assert "Repo" not in inv["summary"]["by_type"] and "Volume" in inv["summary"]["by_type"]

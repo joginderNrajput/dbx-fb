@@ -208,14 +208,9 @@ class MigrationService:
             assessment=req.assessment,
             discovery=DiscoveryOptions(
                 workspace_paths=s.workspace_paths or ["/"],
-                include_jobs=s.include_jobs,
-                include_tables=s.include_tables,
                 catalogs=s.catalogs,
                 schemas=s.schemas,
-                include_secret_scopes=s.include_secret_scopes,
-                include_clusters=s.include_clusters,
-                include_pipelines=s.include_pipelines,
-                include_warehouses=s.include_warehouses,
+                **s.flags(),
                 max_notebooks=min(
                     s.max_notebooks or self.settings.DATABRICKS_MAX_NOTEBOOKS,
                     self.settings.DATABRICKS_MAX_NOTEBOOKS,

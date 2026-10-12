@@ -252,3 +252,161 @@ class DatabricksClient:
 
     def get_warehouse(self, warehouse_id: str) -> dict[str, Any]:
         return self.get(f"/api/2.0/sql/warehouses/{urllib.parse.quote(warehouse_id, safe='')}")
+
+    # ── remaining workspace objects (spec §5.1: every component the engine can route) ──
+    def paged(
+        self,
+        ep: str,
+        key: str,
+        *,
+        page_size: int = 100,
+        size_param: str = "page_size",
+        **params: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """Follow ``next_page_token`` for list endpoints that use it; stops on a repeated token."""
+        token: str | None = None
+        seen: set[str] = set()
+        while True:
+            r = self.get(ep, page_token=token, **{size_param: page_size}, **params)
+            yield from r.get(key) or []
+            token = r.get("next_page_token")
+            if not token or token in seen:
+                return
+            seen.add(token)
+
+    def iter_volumes(self, catalog: str, schema: str) -> Iterator[dict[str, Any]]:
+        return self.paged(
+            "/api/2.1/unity-catalog/volumes",
+            "volumes",
+            size_param="max_results",
+            catalog_name=catalog,
+            schema_name=schema,
+        )
+
+    def get_volume(self, full_name: str) -> dict[str, Any]:
+        return self.get(f"/api/2.1/unity-catalog/volumes/{urllib.parse.quote(full_name, safe='')}")
+
+    def iter_functions(self, catalog: str, schema: str) -> Iterator[dict[str, Any]]:
+        return self.paged(
+            "/api/2.1/unity-catalog/functions",
+            "functions",
+            size_param="max_results",
+            catalog_name=catalog,
+            schema_name=schema,
+        )
+
+    def get_function(self, full_name: str) -> dict[str, Any]:
+        return self.get(
+            f"/api/2.1/unity-catalog/functions/{urllib.parse.quote(full_name, safe='')}"
+        )
+
+    def iter_models(self, catalog: str, schema: str) -> Iterator[dict[str, Any]]:
+        return self.paged(
+            "/api/2.1/unity-catalog/models",
+            "registered_models",
+            size_param="max_results",
+            catalog_name=catalog,
+            schema_name=schema,
+        )
+
+    def get_model(self, full_name: str) -> dict[str, Any]:
+        return self.get(f"/api/2.1/unity-catalog/models/{urllib.parse.quote(full_name, safe='')}")
+
+    def iter_external_locations(self) -> Iterator[dict[str, Any]]:
+        return self.paged(
+            "/api/2.1/unity-catalog/external-locations",
+            "external_locations",
+            size_param="max_results",
+        )
+
+    def get_external_location(self, name: str) -> dict[str, Any]:
+        return self.get(
+            f"/api/2.1/unity-catalog/external-locations/{urllib.parse.quote(name, safe='')}"
+        )
+
+    def iter_connections(self) -> Iterator[dict[str, Any]]:
+        return self.paged(
+            "/api/2.1/unity-catalog/connections", "connections", size_param="max_results"
+        )
+
+    def get_connection(self, name: str) -> dict[str, Any]:
+        return self.get(f"/api/2.1/unity-catalog/connections/{urllib.parse.quote(name, safe='')}")
+
+    def iter_queries(self) -> Iterator[dict[str, Any]]:
+        return self.paged("/api/2.0/sql/queries", "results")
+
+    def get_query(self, query_id: str) -> dict[str, Any]:
+        return self.get(f"/api/2.0/sql/queries/{urllib.parse.quote(query_id, safe='')}")
+
+    def iter_alerts(self) -> Iterator[dict[str, Any]]:
+        return self.paged("/api/2.0/sql/alerts", "results")
+
+    def get_alert(self, alert_id: str) -> dict[str, Any]:
+        return self.get(f"/api/2.0/sql/alerts/{urllib.parse.quote(alert_id, safe='')}")
+
+    def iter_dashboards(self) -> Iterator[dict[str, Any]]:
+        return self.paged("/api/2.0/lakeview/dashboards", "dashboards")
+
+    def get_dashboard(self, dashboard_id: str) -> dict[str, Any]:
+        return self.get(f"/api/2.0/lakeview/dashboards/{urllib.parse.quote(dashboard_id, safe='')}")
+
+    def list_serving_endpoints(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = self.get("/api/2.0/serving-endpoints").get("endpoints") or []
+        return out
+
+    def get_serving_endpoint(self, name: str) -> dict[str, Any]:
+        return self.get(f"/api/2.0/serving-endpoints/{urllib.parse.quote(name, safe='')}")
+
+    def iter_repos(self) -> Iterator[dict[str, Any]]:
+        token: str | None = None
+        seen: set[str] = set()
+        while True:
+            r = self.get("/api/2.0/repos", next_page_token=token)
+            yield from r.get("repos") or []
+            token = r.get("next_page_token")
+            if not token or token in seen:
+                return
+            seen.add(token)
+
+    def get_repo(self, repo_id: str) -> dict[str, Any]:
+        return self.get(f"/api/2.0/repos/{urllib.parse.quote(str(repo_id), safe='')}")
+
+    def all_cluster_libraries(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = (
+            self.get("/api/2.0/libraries/all-cluster-statuses").get("statuses") or []
+        )
+        return out
+
+    def cluster_libraries(self, cluster_id: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = (
+            self.get("/api/2.0/libraries/cluster-status", cluster_id=cluster_id).get(
+                "library_statuses"
+            )
+            or []
+        )
+        return out
+
+    # ── Files API (volume contents, spec §5.9) ──
+    def list_directory(self, path: str) -> Iterator[dict[str, Any]]:
+        """Entries of a /Volumes/... directory (one level): {path, is_directory, file_size}."""
+        token: str | None = None
+        seen: set[str] = set()
+        while True:
+            r = self.get(f"/api/2.0/fs/directories{urllib.parse.quote(path)}", page_token=token)
+            yield from r.get("contents") or []
+            token = r.get("next_page_token")
+            if not token or token in seen:
+                return
+            seen.add(token)
+
+    def download_file(self, path: str) -> bytes:
+        url = self.creds.host + f"/api/2.0/fs/files{urllib.parse.quote(path)}"
+        try:
+            r = self.http.get(
+                url, headers=self._headers(), timeout=self.settings.DATABRICKS_TIMEOUT_S * 4
+            )
+        except httpx.HTTPError as e:
+            raise DatabricksError(f"download {path} failed: {e}") from e
+        if r.status_code != 200:
+            raise DatabricksError(f"download {path} failed -> {r.status_code}: {r.text[:200]}")
+        return r.content

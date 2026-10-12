@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.browse import SelectionIn
+from app.schemas.browse import DiscoveryFlags, SelectionIn
 from app.schemas.common import StrictModel
 from app.schemas.credentials import DatabricksCredentialsIn, FabricCredentialsIn
 
@@ -29,14 +29,12 @@ JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
 DeployKind = Literal["notebook", "shortcuts", "pipeline"]
 
 
-class DatabricksSourceIn(StrictModel):
+class DatabricksSourceIn(DiscoveryFlags):
     type: Literal["databricks"] = "databricks"
     credentials: DatabricksCredentialsIn = DatabricksCredentialsIn()
     workspace_paths: list[str] = Field(
         default_factory=lambda: ["/"], description="Folders to inventory recursively"
     )
-    include_jobs: bool = True
-    include_tables: bool = True
     catalogs: list[str] = Field(
         default_factory=list, description="Unity Catalog catalogs (empty = all non-system)"
     )
@@ -44,10 +42,6 @@ class DatabricksSourceIn(StrictModel):
     warehouse_id: str | None = Field(
         None, description="SQL warehouse for options.copy_data (default: first available)"
     )
-    include_secret_scopes: bool = True
-    include_clusters: bool = True
-    include_pipelines: bool = True
-    include_warehouses: bool = True
     selection: SelectionIn | None = Field(
         None,
         description="Migrate only these objects (ids/paths from the GET /databricks/* browse API); skips the crawl",
