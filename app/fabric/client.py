@@ -71,6 +71,36 @@ class Fabric:
             return r.status_code, dict(r.headers), js if isinstance(js, dict) else {}
         raise FabricError(f"{method} {path}: throttled")
 
+    def upload(self, path: str, data: bytes, filename: str) -> tuple[int, dict[str, str]]:
+        """POST a file: raw bytes first, then multipart ``file`` (endpoints differ in which they take)."""
+        url = self.base + path
+        attempts: list[dict[str, Any]] = [
+            {"content": data, "headers": {"Content-Type": "application/octet-stream"}},
+            {"files": {"file": (filename, data, "application/octet-stream")}},
+        ]
+        last = ""
+        for kw in attempts:
+            if "files" in kw:  # let httpx set the multipart boundary
+                headers = {
+                    k: v for k, v in self.http.headers.items() if k.lower() != "content-type"
+                }
+                req = httpx.Request("POST", url, headers=headers, files=kw["files"])
+            else:
+                req = self.http.build_request(
+                    "POST", url, content=kw["content"], headers=kw["headers"]
+                )
+            try:
+                r = self.http.send(req)
+            except httpx.HTTPError as e:
+                raise FabricError(f"POST {path}: {e}") from e
+            FABRIC_REQUESTS.labels("POST", str(r.status_code)).inc()
+            if r.status_code < 400:
+                return r.status_code, dict(r.headers)
+            last = f"{r.status_code}: {r.text[:300]}"
+            if r.status_code not in (400, 415):
+                break
+        raise FabricError(f"POST {path} -> {last}", details={"status": int(last.split(":")[0])})
+
     def wait(self, headers: dict[str, str]) -> dict[str, Any]:
         loc = headers.get("Location") or headers.get("location")
         if not loc:

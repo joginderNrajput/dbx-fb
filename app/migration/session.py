@@ -35,7 +35,7 @@ from app.sources.offline import build_offline_assessment
 
 __all__ = ["DEPLOY_KINDS", "MigrationSession", "SessionSpec"]
 
-DEPLOY_KINDS = ("notebook", "shortcuts", "pipeline")
+DEPLOY_KINDS = ("environment", "notebook", "shortcuts", "pipeline")
 STAGES = ("inventory", "plan", "convert", "preflight", "deploy", "copy_data", "report")
 
 

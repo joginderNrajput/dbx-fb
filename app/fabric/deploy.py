@@ -90,28 +90,55 @@ def deploy(
     if any(i["target_type"] == "SQL database" for i in items.values()):
         ids["SQLDB"], how = fab.ensure(ws, "sqlDatabases", "SQLDatabase", cfg["sqldb_name"])
         log.info("fabric_item_ensured", kind="sql_database", name=cfg["sqldb_name"], how=how)
+    env_art = next((x for x in arts if x["kind"] == "environment"), None)
+    if env_art and want("environment"):
+        env_id = _deploy_environment(out, cfg, fab, ws, env_art, items)
+        if env_id:
+            ids["ENV"] = env_id
     for e in [x for x in arts if x["kind"] == "notebook" and want("notebook")]:
         try:
             nb = load_json(resolve(out, e["path"]))
             lh = e.get("lakehouse") or cfg["lakehouse_default"]
-            nb["metadata"]["dependencies"] = {
+            deps: dict[str, Any] = {
                 "lakehouse": {
                     "default_lakehouse": ids["LH:" + lh],
                     "default_lakehouse_name": lh,
                     "default_lakehouse_workspace_id": ws,
                 }
             }
-            definition = {
-                "format": "ipynb",
-                "parts": [
-                    {
-                        "path": "notebook-content.ipynb",
-                        "payload": b64(nb),
-                        "payloadType": "InlineBase64",
-                    }
-                ],
-            }
-            nid, how = fab.ensure(ws, "notebooks", "Notebook", e["name"], definition=definition)
+            if "ENV" in ids:
+                deps["environment"] = {"environmentId": ids["ENV"], "workspaceId": ws}
+            nb["metadata"]["dependencies"] = deps
+
+            def definition_of(nb: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "format": "ipynb",
+                    "parts": [
+                        {
+                            "path": "notebook-content.ipynb",
+                            "payload": b64(nb),
+                            "payloadType": "InlineBase64",
+                        }
+                    ],
+                }
+
+            try:
+                nid, how = fab.ensure(
+                    ws, "notebooks", "Notebook", e["name"], definition=definition_of(nb)
+                )
+            except FabricError:
+                if "environment" not in deps:
+                    raise
+                # the environment attachment must never cost the notebook: retry without it
+                deps.pop("environment")
+                nid, how = fab.ensure(
+                    ws, "notebooks", "Notebook", e["name"], definition=definition_of(nb)
+                )
+                for iid in e["items"]:
+                    if iid in items:
+                        items[iid]["reasons"].append(
+                            "Environment not attached (rejected by Fabric): attach it in the notebook settings"
+                        )
             ids["NB:" + e["name"]] = nid
             for iid in e["items"]:
                 if iid in items:
@@ -209,6 +236,60 @@ def deploy(
     ledger["deployed"] = datetime.now().isoformat(timespec="seconds")
     save_json(out / "ledger.json", ledger)
     return ledger
+
+
+ENV_ENDPOINT = "environments"
+
+
+def _deploy_environment(
+    out: Path,
+    cfg: dict[str, Any],
+    fab: Fabric,
+    ws: str,
+    env_art: dict[str, Any],
+    items: dict[str, dict[str, Any]],
+) -> str | None:
+    """Cluster libraries -> a published Fabric Environment that migrated notebooks attach to.
+
+    environment.yml replaces the staged external libraries; publish is a long-running operation.
+    Failures are recorded on the Library/Cluster items and never stop the deploy.
+    """
+    env_items = [
+        i
+        for i in items.values()
+        if i["type"] == "Cluster"
+        or (i["type"] == "Library" and any("environment.yml" in a for a in i["actions"]))
+    ]
+    name = "env_" + cfg["lakehouse_default"]
+    try:
+        env_id, how = fab.ensure(ws, ENV_ENDPOINT, "Environment", name)
+        base = f"/workspaces/{ws}/environments/{env_id}/staging"
+        fab.upload(
+            f"{base}/libraries/importExternalLibraries",
+            resolve(out, env_art["path"]).read_bytes(),
+            "environment.yml",
+        )
+        st, h, _ = fab.req("POST", f"{base}/publish?beta=false")
+        note = f"Fabric Environment '{name}' {how}; libraries imported and published"
+        if st == 202:
+            try:
+                fab.wait(h)
+            except FabricError as ex:
+                note = f"Fabric Environment '{name}': publish not confirmed ({ex.message}); check it in the workspace"
+        log.info("fabric_item_ensured", kind="environment", name=name, how=how)
+    except FabricError as ex:
+        log.warning("fabric_item_failed", kind="environment", name=name, error=ex.message)
+        for it in env_items:
+            it["reasons"].append(
+                f"Environment not deployed ({ex.message}): create it and import environment.yml manually"
+            )
+        return None
+    for it in env_items:
+        it["target_id"] = env_id
+        it["actions"].append(note)
+        if it["type"] == "Library":
+            it["deployment"] = "deployed"
+    return env_id
 
 
 def _dependency_order(out: Path, pipes: list[dict[str, Any]]) -> list[dict[str, Any]]:

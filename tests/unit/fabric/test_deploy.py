@@ -213,3 +213,43 @@ def test_invoked_pipelines_deploy_first_and_schedules_are_not_duplicated(
         n = len(fake.schedules)
         deploy(out, cfg, Fabric("tok", settings), "ws-1", only=["pipeline"])
         assert len(fake.schedules) == n and any("schedule update" in c for c in fake.calls)
+
+
+@pytest.mark.parametrize("multipart", [False, True])
+def test_cluster_libraries_become_a_published_environment(
+    assessment: dict[str, Any], tmp_path: Path, multipart: bool
+) -> None:
+    assessment = json.loads(json.dumps(assessment))
+    assessment["assets"] += [
+        {
+            "type": "Cluster",
+            "name": "etl",
+            "location": "cluster:c1",
+            "meta": {"cluster_id": "c1", "spark_version": "13.3", "spark_conf": {}},
+        },
+        {
+            "type": "Library",
+            "name": "great-expectations==1.0",
+            "location": "library:pypi:great-expectations==1.0",
+            "meta": {"kind": "pypi", "name": "great-expectations==1.0", "clusters": ["c1"]},
+        },
+    ]
+    settings = make_settings(tmp_path)
+    out, cfg = converted(assessment, tmp_path)
+    with respx.mock(assert_all_called=False) as router:
+        fake = FakeFabric(router)
+        fake.env_import_needs_multipart = multipart
+        fake.items.append({"id": "nb-notify", "type": "Notebook", "displayName": "notify"})
+        deploy(out, cfg, Fabric("tok", settings), "ws-1", only=["environment", "notebook"])
+        env = fake.item("Environment", "env_" + cfg["lakehouse_default"])
+        assert env
+        assert b"great-expectations==1.0" in fake.env_yml
+        assert "publish false" in fake.calls
+        nb = fake.item("Notebook", "load_sales")
+        assert nb
+        deps = fake.notebook(nb["id"])["metadata"]["dependencies"]
+        assert deps["environment"] == {"environmentId": env["id"], "workspaceId": "ws-1"}
+    items = {i["id"]: i for i in load_ledger(out)["items"]}
+    lib = items["Library:great-expectations==1.0"]
+    assert lib["deployment"] == "deployed" and lib["target_id"] == env["id"]
+    assert items["Cluster:etl"]["target_id"] == env["id"]

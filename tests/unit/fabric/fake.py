@@ -18,6 +18,7 @@ ENDPOINT_TYPES = {
     "sqlDatabases": "SQLDatabase",
     "notebooks": "Notebook",
     "dataPipelines": "DataPipeline",
+    "environments": "Environment",
 }
 
 
@@ -42,7 +43,7 @@ class FakeFabric:
             side_effect=lambda r: httpx.Response(200, json={"value": self.items})
         )
         router.post(
-            url__regex=rf"{BASE}/workspaces/{ws}/(lakehouses|warehouses|sqlDatabases|notebooks|dataPipelines)$"
+            url__regex=rf"{BASE}/workspaces/{ws}/(lakehouses|warehouses|sqlDatabases|notebooks|dataPipelines|environments)$"
         ).mock(side_effect=self._create)
         router.post(url__regex=rf"{BASE}/workspaces/{ws}/items/[^/]+/updateDefinition").mock(
             side_effect=self._update
@@ -68,6 +69,12 @@ class FakeFabric:
         router.patch(
             url__regex=rf"{BASE}/workspaces/{ws}/items/[^/]+/jobs/Pipeline/schedules/[^/]+"
         ).mock(side_effect=self._schedule_update)
+        router.post(
+            url__regex=rf"{BASE}/workspaces/{ws}/environments/[^/]+/staging/libraries/importExternalLibraries"
+        ).mock(side_effect=self._import_libraries)
+        router.post(url__regex=rf"{BASE}/workspaces/{ws}/environments/[^/]+/staging/publish").mock(
+            side_effect=self._publish
+        )
         router.get(url__regex=rf"{BASE}/operations/.+").mock(
             return_value=httpx.Response(200, json={"status": "Succeeded"})
         )
@@ -80,6 +87,8 @@ class FakeFabric:
         router.get(url__regex=rf"{BASE}/jobs/.+").mock(side_effect=self._job_status)
         router.route(url__startswith=ONELAKE).mock(side_effect=self._onelake)
         self.no_schema_lakehouses: set[str] = set()
+        self.env_import_needs_multipart = False
+        self.env_yml = b""
         self.files: dict[str, bytes] = {}
         self.runs: list[str] = []
         self.fail_runs: set[str] = set()
@@ -118,6 +127,21 @@ class FakeFabric:
             {**json.loads(request.content), "id": sid, "item": request.url.path.split("/")[-4]}
         )
         return httpx.Response(201, json={"id": sid})
+
+    def _import_libraries(self, request: httpx.Request) -> httpx.Response:
+        if self.env_import_needs_multipart and not request.headers.get(
+            "content-type", ""
+        ).startswith("multipart/form-data"):
+            return httpx.Response(415, json={"errorCode": "UnsupportedMediaType"})
+        self.env_yml = request.content
+        self.calls.append("import environment.yml")
+        return httpx.Response(200, json={})
+
+    def _publish(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(f"publish {request.url.params.get('beta')}")
+        return httpx.Response(
+            202, headers={"Location": f"{BASE}/operations/publish", "Retry-After": "0"}
+        )
 
     def _schedule_update(self, request: httpx.Request) -> httpx.Response:
         sid = request.url.path.rsplit("/", 1)[-1]

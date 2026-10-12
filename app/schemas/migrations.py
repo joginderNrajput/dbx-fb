@@ -26,7 +26,7 @@ __all__ = [
 ]
 
 JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]
-DeployKind = Literal["notebook", "shortcuts", "pipeline"]
+DeployKind = Literal["environment", "notebook", "shortcuts", "pipeline"]
 
 
 class DatabricksSourceIn(DiscoveryFlags):
