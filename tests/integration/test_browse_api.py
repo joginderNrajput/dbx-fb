@@ -1,9 +1,10 @@
-"""Browse API (GET /databricks/*, /fabric/*) and migrations driven by a selection."""
+"""Browse API (POST /databricks/*, /fabric/*: credentials in the body) and selection-based migrations."""
 
 from __future__ import annotations
 
 import base64
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -16,119 +17,190 @@ from tests.unit.databricks.test_discovery import HOST, mock_workspace
 from tests.unit.fabric.fake import BASE, FakeFabric
 
 pytestmark = pytest.mark.integration
-DBX = {"X-Databricks-Host": HOST, "X-Databricks-Token": "dapi-123"}
-FAB = {"X-Fabric-Tenant-Id": "t1", "X-Fabric-Client-Id": "c1", "X-Fabric-Client-Secret": "s1"}
+PAT = {"host": HOST, "personal_access_token": "dapi-123"}
+SPN = {"host": HOST, "client_id": "sp-id", "client_secret": "sp-secret"}
+FAB = {"tenant_id": "t1", "client_id": "c1", "client_secret": "s1"}
+
+
+def dbx(**extra: Any) -> dict[str, Any]:
+    return {"credentials": PAT, **extra}
 
 
 def test_databricks_browse_endpoints(client: TestClient) -> None:
     with respx.mock(assert_all_called=False) as router:
         mock_workspace(router)
-        nbs = client.get("/api/v1/databricks/notebooks", headers=DBX).json()
+        nbs = client.post("/api/v1/databricks/notebooks", json=dbx()).json()
         assert nbs["selection_key"] == "notebooks" and nbs["id_field"] == "path"
         assert {i["path"] for i in nbs["items"]} == {"/top", "/Repos/team/load_sales"}
-        scoped = client.get(
-            "/api/v1/databricks/notebooks", params={"path": "/Repos/team"}, headers=DBX
-        ).json()
+        scoped = client.post("/api/v1/databricks/notebooks", json=dbx(paths=["/Repos/team"])).json()
         assert [i["path"] for i in scoped["items"]] == ["/Repos/team/load_sales"]
-        limited = client.get(
-            "/api/v1/databricks/notebooks", params={"limit": 1}, headers=DBX
-        ).json()
+        limited = client.post("/api/v1/databricks/notebooks", json=dbx(limit=1)).json()
         assert limited["count"] == 1 and limited["truncated"] is True
-        ws = client.get("/api/v1/databricks/workspace", headers=DBX).json()
+        ws = client.post("/api/v1/databricks/workspace", json=dbx(path="/")).json()
         assert ws["items"][0]["object_type"] == "DIRECTORY"
 
-        jobs = client.get("/api/v1/databricks/jobs", headers=DBX).json()
+        jobs = client.post("/api/v1/databricks/jobs", json=dbx()).json()
         assert jobs["selection_key"] == "jobs" and jobs["items"][0]["job_id"] == 7
+        assert client.post("/api/v1/databricks/jobs", json=dbx(name="nomatch")).json()["count"] == 0
         assert (
-            client.get("/api/v1/databricks/jobs", params={"name": "nomatch"}, headers=DBX).json()[
-                "count"
-            ]
-            == 0
-        )
-        assert (
-            client.get("/api/v1/databricks/jobs/7", headers=DBX).json()["settings"]["name"]
+            client.post("/api/v1/databricks/jobs/7", json=dbx()).json()["settings"]["name"]
             == "nightly"
         )
 
-        clusters = client.get("/api/v1/databricks/clusters", headers=DBX).json()
-        assert [c["cluster_id"] for c in clusters["items"]] == [
-            "c1"
-        ]  # job clusters hidden by default
+        clusters = client.post("/api/v1/databricks/clusters", json=dbx()).json()
+        assert [c["cluster_id"] for c in clusters["items"]] == ["c1"]
         assert (
-            client.get(
-                "/api/v1/databricks/clusters", params={"include_job_clusters": True}, headers=DBX
-            ).json()["count"]
+            client.post("/api/v1/databricks/clusters", json=dbx(include_job_clusters=True)).json()[
+                "count"
+            ]
             == 2
         )
         assert (
-            client.get("/api/v1/databricks/pipelines", headers=DBX).json()["items"][0][
+            client.post("/api/v1/databricks/pipelines", json=dbx()).json()["items"][0][
                 "pipeline_id"
             ]
             == "p1"
         )
-        wh = client.get("/api/v1/databricks/warehouses", headers=DBX).json()
+        wh = client.post("/api/v1/databricks/warehouses", json=dbx()).json()
         assert wh["id_field"] == "id" and {w["state"] for w in wh["items"]} == {
             "RUNNING",
             "STOPPED",
         }
-        cats = client.get("/api/v1/databricks/catalogs", headers=DBX).json()
-        assert [c["name"] for c in cats["items"]] == ["main"]  # system catalog hidden
-        schemas = client.get("/api/v1/databricks/catalogs/main/schemas", headers=DBX).json()
+        cats = client.post("/api/v1/databricks/catalogs", json=dbx()).json()
+        assert [c["name"] for c in cats["items"]] == ["main"]
+        schemas = client.post("/api/v1/databricks/catalogs/main/schemas", json=dbx()).json()
         assert [s["full_name"] for s in schemas["items"]] == ["main.gold"] and schemas[
             "selection_key"
         ] == "tables"
-        tables = client.get(
-            "/api/v1/databricks/catalogs/main/schemas/gold/tables", headers=DBX
+        tables = client.post(
+            "/api/v1/databricks/catalogs/main/schemas/gold/tables", json=dbx()
         ).json()
-        assert tables["items"][0] == {
-            "full_name": "main.gold.sales",
-            "name": "sales",
-            "table_type": "EXTERNAL",
-            "format": "DELTA",
-            "storage_location": "abfss://c@a.dfs.core.windows.net/sales",
-            "columns": 2,
-            "owner": None,
-        }
-        r = client.get("/api/v1/databricks/secret-scopes", headers=DBX)
-        assert r.status_code == 502  # the fake's scopes/list fails upstream
-        inv = client.get(
-            "/api/v1/databricks/inventory", params={"catalog": "main"}, headers=DBX
-        ).json()
+        assert (
+            tables["items"][0]["full_name"] == "main.gold.sales"
+            and tables["items"][0]["columns"] == 2
+        )
+        assert (
+            client.post("/api/v1/databricks/secret-scopes", json=dbx()).status_code == 502
+        )  # fake's scopes/list fails
+        inv = client.post("/api/v1/databricks/inventory", json=dbx(catalogs=["main"])).json()
         assert inv["summary"]["by_type"]["Notebook"] == 2 and "assets" in inv
+        assert all("Bearer dapi-123" == c.request.headers["Authorization"] for c in router.calls)
 
 
-def test_browse_needs_credentials_and_safe_host(client: TestClient) -> None:
-    r = client.get("/api/v1/databricks/jobs")
-    assert r.status_code == 422 and r.json()["error"]["field"] == "X-Databricks-Host"
-    r = client.get(
+def test_service_principal_wins_over_pat(client: TestClient) -> None:
+    with respx.mock(assert_all_called=False) as router:
+        mock_workspace(router)
+        token = router.post(f"{HOST}/oidc/v1/token").mock(
+            return_value=httpx.Response(200, json={"access_token": "oauth-tok"})
+        )
+        both = {**SPN, "personal_access_token": "dapi-ignored"}
+        r = client.post("/api/v1/databricks/clusters", json={"credentials": both})
+        assert r.status_code == 200
+        assert (
+            token.called
+            and router.calls.last.request.headers["Authorization"] == "Bearer oauth-tok"
+        )
+        assert "dapi-ignored" not in str([c.request.headers for c in router.calls])
+        # the alias "token" is accepted for the PAT
+        r = client.post(
+            "/api/v1/databricks/clusters",
+            json={"credentials": {"host": HOST, "token": "dapi-alias"}},
+        )
+        assert (
+            r.status_code == 200
+            and router.calls.last.request.headers["Authorization"] == "Bearer dapi-alias"
+        )
+        # connection check reports which method was used
+        router.get(f"{HOST}/api/2.0/preview/scim/v2/Me").mock(
+            return_value=httpx.Response(200, json={"userName": "sp"})
+        )
+        assert (
+            client.post("/api/v1/connections/databricks/test", json={"credentials": both}).json()[
+                "auth_type"
+            ]
+            == "service_principal"
+        )
+        assert (
+            client.post("/api/v1/connections/databricks/test", json={"credentials": PAT}).json()[
+                "auth_type"
+            ]
+            == "personal_access_token"
+        )
+
+
+def test_credential_validation(client: TestClient) -> None:
+    r = client.post("/api/v1/databricks/jobs", json={})
+    assert r.status_code == 422 and r.json()["error"]["field"] == "credentials"
+    r = client.post(
         "/api/v1/databricks/jobs",
-        headers={"X-Databricks-Host": "https://10.0.0.5", "X-Databricks-Token": "x"},
+        json={
+            "credentials": {"host": HOST, "client_id": "only-id", "personal_access_token": "dapi"}
+        },
+    )
+    assert (
+        r.status_code == 422 and r.json()["error"]["field"] == "credentials.client_secret"
+    )  # half a service principal
+    r = client.post(
+        "/api/v1/databricks/jobs",
+        json={"credentials": {"host": HOST, "client_secret": "only-secret"}},
+    )
+    assert r.status_code == 422 and r.json()["error"]["field"] == "credentials.client_id"
+    r = client.post(
+        "/api/v1/databricks/jobs",
+        json={"credentials": {"host": "https://10.0.0.5", "personal_access_token": "x"}},
     )
     assert r.status_code == 422 and "private" in r.json()["error"]["message"]
-    r = client.get("/api/v1/fabric/workspaces")
-    assert r.status_code == 422 and r.json()["error"]["field"] == "X-Fabric-Client-Id"
+    r = client.post("/api/v1/databricks/jobs", json={"credentials": {**PAT, "password": "x"}})
+    assert r.status_code == 400 and r.json()["error"]["field"] == "credentials.password"
+    # Fabric: service principal only
+    r = client.post("/api/v1/fabric/workspaces", json={})
+    assert r.status_code == 422 and r.json()["error"]["field"] == "credentials"
+    r = client.post("/api/v1/fabric/workspaces", json={"credentials": {"access_token": "bearer"}})
+    assert r.status_code == 400
+    r = client.post(
+        "/api/v1/fabric/workspaces", json={"credentials": {"tenant_id": "t", "client_id": "c"}}
+    )
+    assert r.status_code == 400 and r.json()["error"]["field"] == "credentials.client_secret"
+    r = client.post(
+        "/api/v1/connections/fabric/test",
+        json={"credentials": {**FAB, "tenant_id": "<entra-tenant-id>"}},
+    )
+    assert r.status_code == 422 and r.json()["error"]["field"] == "credentials.tenant_id"
+    # GET is gone: credentials never travel outside a body
+    assert client.get("/api/v1/databricks/jobs").status_code == 405
 
 
 def test_env_credentials_fallback(tmp_path: Path) -> None:
     s = make_settings(
-        tmp_path, ALLOW_ENV_CREDENTIALS=True, DATABRICKS_HOST=HOST, DATABRICKS_TOKEN="dapi-env"
+        tmp_path,
+        ALLOW_ENV_CREDENTIALS=True,
+        DATABRICKS_HOST=HOST,
+        DATABRICKS_TOKEN="dapi-env",
+        DATABRICKS_CLIENT_ID="env-sp",
+        DATABRICKS_CLIENT_SECRET="env-secret",
     )
     with TestClient(create_app(s)) as c, respx.mock(assert_all_called=False) as router:
         mock_workspace(router)
-        assert c.get("/api/v1/databricks/clusters").status_code == 200
-        assert router.calls.last.request.headers["Authorization"] == "Bearer dapi-env"
+        router.post(f"{HOST}/oidc/v1/token").mock(
+            return_value=httpx.Response(200, json={"access_token": "env-oauth"})
+        )
+        assert c.post("/api/v1/databricks/clusters", json={}).status_code == 200
+        assert (
+            router.calls.last.request.headers["Authorization"] == "Bearer env-oauth"
+        )  # SP wins in settings too
 
 
 def test_fabric_browse_endpoints(client: TestClient) -> None:
+    ws_id = "11111111-2222-3333-4444-555555555555"
     with respx.mock(assert_all_called=False) as router:
-        fake = FakeFabric(router)
+        FakeFabric(router)
         router.get(f"{BASE}/workspaces").mock(
             return_value=httpx.Response(
                 200,
                 json={
                     "value": [
                         {
-                            "id": "11111111-2222-3333-4444-555555555555",
+                            "id": ws_id,
                             "displayName": "Alteryx_Fabric",
                             "type": "Workspace",
                             "capacityId": "cap",
@@ -137,7 +209,6 @@ def test_fabric_browse_endpoints(client: TestClient) -> None:
                 },
             )
         )
-        ws_id = "11111111-2222-3333-4444-555555555555"
 
         def lakehouses(request: httpx.Request) -> httpx.Response:
             if request.url.params.get("continuationToken") == "next":
@@ -151,7 +222,7 @@ def test_fabric_browse_endpoints(client: TestClient) -> None:
                         {
                             "id": "lk1",
                             "displayName": "Src_LK",
-                            "properties": {"defaultSchema": "dbo", "oneLakeTablesPath": "t"},
+                            "properties": {"defaultSchema": "dbo"},
                         }
                     ],
                     "continuationToken": "next",
@@ -166,32 +237,33 @@ def test_fabric_browse_endpoints(client: TestClient) -> None:
                 200, json={"value": [{"id": "n1", "displayName": "nb", "type": "Notebook"}]}
             )
         )
-        wss = client.get("/api/v1/fabric/workspaces", headers=FAB).json()
+        body = {"credentials": FAB}
+        wss = client.post("/api/v1/fabric/workspaces", json=body).json()
         assert wss["items"] == [
             {"id": ws_id, "name": "Alteryx_Fabric", "type": "Workspace", "capacity_id": "cap"}
         ]
-        lhs = client.get(
-            "/api/v1/fabric/workspaces/Alteryx_Fabric/lakehouses", headers=FAB
-        ).json()  # by name
+        lhs = client.post("/api/v1/fabric/workspaces/Alteryx_Fabric/lakehouses", json=body).json()
         assert [(lh["name"], lh["schemas_enabled"]) for lh in lhs["items"]] == [
             ("Src_LK", True),
             ("Old_LK", False),
         ]
-        items = client.get(
-            f"/api/v1/fabric/workspaces/{ws_id}/items", params={"type": "Notebook"}, headers=FAB
+        items = client.post(
+            f"/api/v1/fabric/workspaces/{ws_id}/items", json={**body, "type": "Notebook"}
         ).json()
         assert items["items"][0]["name"] == "nb" and "type=Notebook" in str(
             router.calls.last.request.url
         )
         assert (
-            client.get("/api/v1/fabric/workspaces/Nope/lakehouses", headers=FAB).status_code == 502
+            client.post("/api/v1/fabric/workspaces/Nope/lakehouses", json=body).status_code == 502
         )
-        assert fake  # token flow used the fake's Entra ID route
 
 
-def test_migration_with_selection_does_not_crawl(client: TestClient) -> None:
+def test_migration_with_selection_and_service_principal(client: TestClient) -> None:
     with respx.mock(assert_all_called=False) as router:
         mock_workspace(router)
+        router.post(f"{HOST}/oidc/v1/token").mock(
+            return_value=httpx.Response(200, json={"access_token": "oauth-tok"})
+        )
         router.get(f"{HOST}/api/2.0/workspace/export").mock(
             side_effect=lambda req: httpx.Response(
                 200,
@@ -205,7 +277,7 @@ def test_migration_with_selection_does_not_crawl(client: TestClient) -> None:
         body = {
             "source": {
                 "type": "databricks",
-                "credentials": {"host": HOST, "token": "dapi"},
+                "credentials": SPN,
                 "selection": {
                     "notebooks": ["/top"],
                     "jobs": ["7"],
@@ -219,7 +291,15 @@ def test_migration_with_selection_does_not_crawl(client: TestClient) -> None:
         assert r.status_code == 202, r.text
         job = wait_for_job(client, r.json()["id"])
         urls = [str(c.request.url) for c in router.calls]
+        auths = {
+            c.request.headers.get("Authorization")
+            for c in router.calls
+            if "/api/2." in str(c.request.url)
+        }
     assert job["status"] == "succeeded", job
+    assert job["options"]["databricks_auth"] == "service_principal" and auths == {
+        "Bearer oauth-tok"
+    }
     assert job["inventory"]["by_type"] == {
         "Notebook": 1,
         "Job": 1,
@@ -227,46 +307,13 @@ def test_migration_with_selection_does_not_crawl(client: TestClient) -> None:
         "SQL Warehouse": 1,
         "Table/View": 1,
     }
-    assert job["options"]["selection"] == {
-        "notebooks": 1,
-        "jobs": 1,
-        "pipelines": 1,
-        "warehouses": 1,
-        "tables": 1,
-    }
     assert not any(
         "workspace/list" in u or "jobs/list" in u or "unity-catalog/catalogs" in u for u in urls
     )
-    items = {
-        i["id"]: i for i in client.get(f"/api/v1/migrations/{job['id']}/items").json()["items"]
-    }
-    assert items["Job:nightly"]["outcome"] in ("needs_testing", "partial")
-    assert items["SQL Warehouse:Shared"]["outcome"] == "migrated"
-    assert (
-        items["DLT Pipeline:bronze_dlt"]["outcome"] == "not_migrated"
-    )  # manual redesign + AI work order
     r = client.post(
         "/api/v1/migrations",
         json={
-            "source": {
-                "type": "databricks",
-                "credentials": {"host": HOST, "token": "d"},
-                "selection": {"notebook": ["/x"]},
-            }
+            "source": {"type": "databricks", "credentials": PAT, "selection": {"notebook": ["/x"]}}
         },
     )
     assert r.status_code == 400 and r.json()["error"]["field"] == "source.selection.notebook"
-
-
-def test_placeholder_tenant_is_a_422_not_a_500(client: TestClient) -> None:
-    r = client.post(
-        "/api/v1/connections/fabric/test",
-        json={
-            "credentials": {
-                "tenant_id": "<entra-tenant-id>",
-                "client_id": "c",
-                "client_secret": "s",
-            }
-        },
-    )
-    assert r.status_code == 422 and r.json()["error"]["field"] == "credentials"

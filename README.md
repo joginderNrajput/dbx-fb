@@ -27,9 +27,11 @@ curl -F "files=@my_notebook.ipynb" -F 'config={}' http://localhost:8000/api/v1/m
 Then follow the job at `GET /api/v1/migrations/{id}`. When it finishes, open `/report` or
 download everything from `/download`.
 
-Before migrating, browse the source with `GET /api/v1/databricks/{notebooks,jobs,clusters,pipelines,
-warehouses,catalogs,secret-scopes}` (credentials in `X-Databricks-*` headers) and the target with
-`GET /api/v1/fabric/workspaces/...`. Then send only the picked ids as `source.selection`.
+Before migrating, browse the source with `POST /api/v1/databricks/{notebooks,jobs,clusters,pipelines,
+warehouses,catalogs,secret-scopes}` and the target with `POST /api/v1/fabric/workspaces/...`. Then
+send only the picked ids as `source.selection`. Credentials always go in the JSON body: Databricks
+accepts a service principal (`client_id` + `client_secret`, used when present) or a
+`personal_access_token`, and Fabric accepts a service principal only.
 
 ## Day-to-day
 

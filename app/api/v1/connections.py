@@ -26,12 +26,20 @@ async def test_databricks(
 ) -> dict[str, Any]:
     creds = build_databricks_credentials(body.credentials, settings, field="credentials")
     if creds is None:
-        raise ValidationFailed("Databricks host and token are required", field="credentials")
+        raise ValidationFailed(
+            "send credentials {host, client_id + client_secret} or {host, personal_access_token}",
+            field="credentials",
+        )
 
     def check() -> dict[str, Any]:
         with DatabricksClient(creds, settings) as c:
             me = c.current_user()
-        return {"ok": True, "host": creds.host, "user": me.get("userName") or me.get("displayName")}
+        return {
+            "ok": True,
+            "host": creds.host,
+            "auth_type": creds.auth_type,
+            "user": me.get("userName") or me.get("displayName"),
+        }
 
     return await run_in_threadpool(check)
 
@@ -42,7 +50,10 @@ async def test_fabric(
 ) -> dict[str, Any]:
     creds = build_fabric_credentials(body.credentials, settings, field="credentials")
     if creds is None:
-        raise ValidationFailed("Fabric credentials are required", field="credentials")
+        raise ValidationFailed(
+            "send credentials {tenant_id, client_id, client_secret} (Fabric service principal)",
+            field="credentials",
+        )
 
     def check() -> dict[str, Any]:
         with httpx.Client(timeout=settings.FABRIC_TIMEOUT_S) as http:

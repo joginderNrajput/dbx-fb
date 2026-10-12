@@ -13,6 +13,12 @@ __all__ = ["DatabricksCredentials", "access_token"]
 
 @dataclass(frozen=True)
 class DatabricksCredentials:
+    """Exactly one method: a service principal (client_id + client_secret, OAuth M2M) OR a PAT.
+
+    When both are supplied the service principal wins and the token is dropped
+    (``build_databricks_credentials``), so ``auth_type`` always says which one is used.
+    """
+
     host: str
     token: str | None = field(default=None, repr=False)
     client_id: str | None = None
@@ -21,17 +27,30 @@ class DatabricksCredentials:
     def __post_init__(self) -> None:
         if not self.host:
             raise ValidationFailed("Databricks host is required", field="credentials.host")
-        if not self.token and not (self.client_id and self.client_secret):
+        if bool(self.client_id) != bool(self.client_secret):
             raise ValidationFailed(
-                "Databricks credentials need a token, or client_id + client_secret",
-                field="credentials.token",
+                "a Databricks service principal needs both client_id and client_secret",
+                field="credentials.client_secret" if self.client_id else "credentials.client_id",
             )
+        if not self.token and not self.client_id:
+            raise ValidationFailed(
+                "Databricks credentials need client_id + client_secret (service principal) or personal_access_token",
+                field="credentials.personal_access_token",
+            )
+
+    @property
+    def auth_type(self) -> str:
+        return (
+            "service_principal"
+            if self.client_id and self.client_secret
+            else "personal_access_token"
+        )
 
 
 def access_token(creds: DatabricksCredentials, http: httpx.Client) -> str:
-    """PAT as-is; for a service principal run the OAuth client-credentials flow on the workspace."""
-    if creds.token:
-        return creds.token
+    """Service principal: OAuth client-credentials on the workspace. Otherwise the PAT as-is."""
+    if creds.auth_type == "personal_access_token":
+        return creds.token or ""
     try:
         r = http.post(
             f"{creds.host}/oidc/v1/token",

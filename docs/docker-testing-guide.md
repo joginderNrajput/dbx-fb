@@ -35,7 +35,6 @@ defaults, which means **auth enabled**, so `/api/v1` answers 401. For local test
 |---|---|
 | `OUTPUT_DIR` | ignored: compose pins it to `/app/output`, mounted from `./output` on the host |
 | `ANTHROPIC_API_KEY` / `LLM_*` | set one provider to try agent mode (Claude needs the `ai` extra, included by default; Azure OpenAI needs nothing extra) |
-| `FABRIC_ALLOW_AZ_CLI` | not usable in the container (no `az` CLI inside); use a service principal or token |
 | `API_PORT` | host port, default 8000 |
 | `DOCKER_EXTRAS` | `ai` (default) or empty to build without the Anthropic SDK |
 
@@ -171,7 +170,7 @@ docker rm -f dbx2fabric
 ```
 
 With `APP_ENV=production` the container refuses to start if `AUTH_DISABLED`,
-`ALLOW_ENV_CREDENTIALS`, `FABRIC_ALLOW_AZ_CLI` or `ALLOW_PRIVATE_HOSTS` is set, or if no API key
+`ALLOW_ENV_CREDENTIALS` or `ALLOW_PRIVATE_HOSTS` is set, or if no API key
 hash is configured. That refusal is the intended behaviour; check `docker logs`.
 
 ---

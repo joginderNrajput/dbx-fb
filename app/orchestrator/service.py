@@ -38,64 +38,67 @@ __all__ = ["MigrationService", "build_databricks_credentials", "build_fabric_cre
 log = get_logger(__name__)
 
 
+def _subfield(prefix: str, e: ValidationFailed) -> str:
+    """credentials.client_secret -> <prefix>.client_secret, so the error names the request field."""
+    leaf = (e.field or "").split(".")[-1]
+    return f"{prefix}.{leaf}" if leaf else prefix
+
+
 def build_databricks_credentials(
     c: DatabricksCredentialsIn | None, settings: Settings, *, field: str
 ) -> DatabricksCredentials | None:
-    """Request credentials, else (dev only) the DATABRICKS_* settings; None when nothing is given."""
+    """Request credentials, else (dev only) the DATABRICKS_* settings; None when nothing is given.
+
+    Exactly one method is used: client_id + client_secret (service principal) when present,
+    otherwise the personal access token. The token is DROPPED when the service principal is used.
+    """
     c = c or DatabricksCredentialsIn()
     host = c.host
-    token = resolve_secret(c.token, settings, field=f"{field}.token")
+    token = resolve_secret(c.token, settings, field=f"{field}.personal_access_token")
     secret = resolve_secret(c.client_secret, settings, field=f"{field}.client_secret")
-    client_id = c.client_id
-    if not host and not token and not client_id and settings.ALLOW_ENV_CREDENTIALS:
+    client_id = c.client_id or None
+    if not host and not token and not client_id and not secret and settings.ALLOW_ENV_CREDENTIALS:
         host = settings.DATABRICKS_HOST
-        token = resolve_secret(settings.DATABRICKS_TOKEN, settings, field=f"{field}.token")
+        token = resolve_secret(
+            settings.DATABRICKS_TOKEN, settings, field=f"{field}.personal_access_token"
+        )
         client_id = settings.DATABRICKS_CLIENT_ID or None
         secret = resolve_secret(
             settings.DATABRICKS_CLIENT_SECRET, settings, field=f"{field}.client_secret"
         )
-    if not host and not token and not client_id:
+    if not host and not token and not client_id and not secret:
         return None
+    if client_id or secret:
+        token = None  # service principal requested: use it and nothing else
     host = ensure_safe_url(host, field=f"{field}.host", allow_private=settings.ALLOW_PRIVATE_HOSTS)
     try:
         return DatabricksCredentials(
             host=host, token=token, client_id=client_id, client_secret=secret
         )
     except ValidationFailed as e:
-        raise ValidationFailed(e.message, field=f"{field}.token") from e
+        raise ValidationFailed(e.message, field=_subfield(field, e)) from e
 
 
 def build_fabric_credentials(
     c: FabricCredentialsIn | None, settings: Settings, *, field: str
 ) -> FabricCredentials | None:
-    c = c or FabricCredentialsIn()
-    token = resolve_secret(c.access_token, settings, field=f"{field}.access_token")
-    secret = resolve_secret(c.client_secret, settings, field=f"{field}.client_secret")
-    tenant, client_id, use_cli = c.tenant_id, c.client_id, c.use_az_cli
-    if not (token or tenant or client_id or use_cli) and settings.ALLOW_ENV_CREDENTIALS:
-        token = resolve_secret(settings.FABRIC_TOKEN, settings, field=f"{field}.access_token")
-        tenant, client_id = settings.FABRIC_TENANT_ID or None, settings.FABRIC_CLIENT_ID or None
+    """Fabric = service principal only. Request body first, else (dev only) FABRIC_* settings."""
+    if c is not None:
+        tenant, client_id = c.tenant_id, c.client_id
+        secret = resolve_secret(c.client_secret, settings, field=f"{field}.client_secret")
+    elif settings.ALLOW_ENV_CREDENTIALS and (
+        settings.FABRIC_TENANT_ID or settings.FABRIC_CLIENT_ID
+    ):
+        tenant, client_id = settings.FABRIC_TENANT_ID, settings.FABRIC_CLIENT_ID
         secret = resolve_secret(
             settings.FABRIC_CLIENT_SECRET, settings, field=f"{field}.client_secret"
         )
-        use_cli = not (token or (tenant and client_id and secret)) and settings.FABRIC_ALLOW_AZ_CLI
-    if not (token or tenant or client_id or use_cli):
+    else:
         return None
-    if use_cli and not settings.FABRIC_ALLOW_AZ_CLI:
-        raise ValidationFailed(
-            "az CLI tokens are disabled on this server (FABRIC_ALLOW_AZ_CLI)",
-            field=f"{field}.use_az_cli",
-        )
     try:
-        return FabricCredentials(
-            access_token=token,
-            tenant_id=tenant,
-            client_id=client_id,
-            client_secret=secret,
-            use_az_cli=use_cli,
-        )
+        return FabricCredentials(tenant_id=tenant, client_id=client_id, client_secret=secret or "")
     except ValidationFailed as e:
-        raise ValidationFailed(e.message, field=field) from e
+        raise ValidationFailed(e.message, field=_subfield(field, e)) from e
 
 
 @dataclass(frozen=True)
@@ -178,6 +181,7 @@ class MigrationService:
             "fabric_credentials": bool(t.fabric),
             "databricks_credentials": bool(dbx),
             "databricks_host": dbx.host if dbx else None,
+            "databricks_auth": dbx.auth_type if dbx else None,
         }
 
     def create_from_databricks(self, req: MigrationCreate) -> JobRecord:

@@ -57,9 +57,16 @@ def test_service_principal_token(settings: Settings) -> None:
         )
 
 
-def test_az_cli_refused_unless_enabled(settings: Settings) -> None:
-    with httpx.Client() as http, pytest.raises(ValidationFailed):
-        acquire_token(FabricCredentials(use_az_cli=True), settings, http)
+def test_fabric_accepts_service_principal_only() -> None:
+    for kwargs in (
+        {"tenant_id": "t", "client_id": "c", "client_secret": ""},
+        {"tenant_id": "", "client_id": "c", "client_secret": "s"},
+    ):
+        with pytest.raises(ValidationFailed, match="service principal"):
+            FabricCredentials(**kwargs)
+    assert "s3cret" not in repr(
+        FabricCredentials(tenant_id="t", client_id="c", client_secret="s3cret")
+    )
 
 
 def test_deploy_creates_items_and_is_idempotent(assessment: dict[str, Any], tmp_path: Path) -> None:

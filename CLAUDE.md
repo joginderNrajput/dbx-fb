@@ -53,8 +53,7 @@ sequential. Claude calls are budgeted by `AGENT_MAX_TURNS` and `AI_MAX_CELLS_PER
 
 `make dev` (host) and `make up` (Docker) read the same `.env` and write the same `./output`.
 Development-only flags, refused when `APP_ENV=production`: `AUTH_DISABLED`,
-`ALLOW_ENV_CREDENTIALS` (settings fallbacks and `env://NAME` refs), `FABRIC_ALLOW_AZ_CLI`,
-`ALLOW_PRIVATE_HOSTS`.
+`ALLOW_ENV_CREDENTIALS` (settings fallbacks and `env://NAME` refs), `ALLOW_PRIVATE_HOSTS`.
 
 ## Read this section of the spec before touching this package
 
@@ -103,14 +102,16 @@ Development-only flags, refused when `APP_ENV=production`: `AUTH_DISABLED`,
   recovers from a tool error; an exception would end the job.
 - **`API_KEY_HASHES` goes in single quotes in `.env`.** Argon2 hashes contain `$`, which compose
   and dotenv expand otherwise.
-- **Data copy reads through a SQL warehouse and writes through OneLake.** A bare Fabric
-  `access_token` has the Fabric audience and cannot write OneLake; copy_data needs a service
-  principal. `EXTERNAL_LINKS` downloads also need `*.blob.core.windows.net` reachable.
+- **Data copy reads through a SQL warehouse and writes through OneLake.** OneLake tokens are minted
+  from the same Fabric service principal with the storage audience. `EXTERNAL_LINKS` downloads
+  also need `*.blob.core.windows.net` reachable.
 - **Scripted multi-line edits must assert their anchor.** After `ruff format` reflows a block, a
   silent `str.replace` no-op once left a feature half-applied with green tests elsewhere.
-- **Browse GETs take credentials in `X-Databricks-*` / `X-Fabric-*` headers, never query params.**
-  Query strings land in access logs; headers do not. The browse lists and `discover_selected`
-  share the asset builders in `app/databricks/discovery.py`, so what is listed is what gets migrated.
+- **Credentials only ever travel in request bodies (ADR 0008).** That is why browse calls are
+  `POST`: GET bodies are dropped by clients and proxies, and URLs land in access logs. Databricks:
+  `client_id` + `client_secret` win and the token is dropped (`build_databricks_credentials`), half
+  a service principal is a 422. Fabric: service principal only. The browse lists and
+  `discover_selected` share the asset builders in `app/databricks/discovery.py`.
 - **Paginators stop on a repeated continuation token.** A fake that kept returning the same token
   once hung the test suite; a misbehaving API would hang a job the same way.
 - **The Docker image has no apt layer.** `python:3.12-slim` ships CA certificates and every

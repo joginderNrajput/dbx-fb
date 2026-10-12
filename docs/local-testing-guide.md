@@ -54,7 +54,6 @@ Settings in `.env` that matter for local testing:
 | `OUTPUT_DIR` | `output` | jobs, uploads and generated artifacts go to `./output/jobs/<id>/` |
 | `ANTHROPIC_API_KEY` | empty or your key | needed only for `mode=agent` / `ai_fix` |
 | `ALLOW_ENV_CREDENTIALS` | `false` | set `true` to let requests omit credentials and use `DATABRICKS_*` / `FABRIC_*` from `.env` |
-| `FABRIC_ALLOW_AZ_CLI` | `false` | set `true` to deploy with your `az login` token (`"use_az_cli": true`) |
 
 To test with authentication on, run `make hash-key`. Put the printed hash in
 `API_KEY_HASHES='…'` (keep the single quotes), set `AUTH_DISABLED=false`, and send the key as
@@ -241,27 +240,37 @@ Development shortcut: with `ALLOW_ENV_CREDENTIALS=true` and `DATABRICKS_HOST` /
 
 ### 6b. Browse first, then migrate only what you picked
 
-The browse API lists what is in the workspace. Credentials go in **headers**. With
-`ALLOW_ENV_CREDENTIALS=true` and `.env` filled in, you can leave them out.
+The browse API lists what is in the workspace. Every browse call is a `POST` whose **JSON body**
+carries the credentials, plus filters. Credentials never go in headers or the URL. With
+`ALLOW_ENV_CREDENTIALS=true` and `.env` filled in, send `{}` instead.
+
+Databricks takes **one** of two methods. If `client_id` + `client_secret` are present, the service
+principal is used and nothing else. Otherwise `personal_access_token` is used. Fabric takes a
+service principal only.
 
 ```bash
-H=(-H "X-Databricks-Host: https://adb-<id>.<n>.azuredatabricks.net" -H "X-Databricks-Token: dapi...")
-curl -s "${H[@]}" "$API/databricks/notebooks?path=/Workspace/Shared" | python3 -m json.tool
-curl -s "${H[@]}" "$API/databricks/workspace?path=/Repos"            # one folder level
-curl -s "${H[@]}" "$API/databricks/jobs?name=sales"
-curl -s "${H[@]}" "$API/databricks/jobs/123456"                       # full job definition
-curl -s "${H[@]}" "$API/databricks/clusters"
-curl -s "${H[@]}" "$API/databricks/pipelines"                         # DLT / Lakeflow
-curl -s "${H[@]}" "$API/databricks/warehouses"                        # also used by copy_data
-curl -s "${H[@]}" "$API/databricks/catalogs"
-curl -s "${H[@]}" "$API/databricks/catalogs/altryxtodatabricks_accelarator_01/schemas"
-curl -s "${H[@]}" "$API/databricks/catalogs/altryxtodatabricks_accelarator_01/schemas/flip_local_test/tables"
-curl -s "${H[@]}" "$API/databricks/secret-scopes"                     # key names only
+DBX='{"host": "https://adb-<id>.<n>.azuredatabricks.net", "client_id": "<sp-app-id>", "client_secret": "<sp-secret>"}'
+# or: DBX='{"host": "https://adb-<id>.<n>.azuredatabricks.net", "personal_access_token": "dapi..."}'
+FAB='{"tenant_id": "<tenant>", "client_id": "<app-id>", "client_secret": "<secret>"}'
+J=(-H 'Content-Type: application/json')
 
-F=(-H "X-Fabric-Tenant-Id: <tenant>" -H "X-Fabric-Client-Id: <app-id>" -H "X-Fabric-Client-Secret: <secret>")
-curl -s "${F[@]}" "$API/fabric/workspaces"
-curl -s "${F[@]}" "$API/fabric/workspaces/Alteryx_Fabric/lakehouses"  # id or name; shows schemas_enabled
+curl -s -X POST "${J[@]}" $API/databricks/notebooks  -d "{\"credentials\": $DBX, \"paths\": [\"/Workspace/Shared\"]}" | python3 -m json.tool
+curl -s -X POST "${J[@]}" $API/databricks/workspace  -d "{\"credentials\": $DBX, \"path\": \"/Repos\"}"   # one folder level
+curl -s -X POST "${J[@]}" $API/databricks/jobs       -d "{\"credentials\": $DBX, \"name\": \"sales\"}"
+curl -s -X POST "${J[@]}" $API/databricks/jobs/123456 -d "{\"credentials\": $DBX}"                  # full job definition
+curl -s -X POST "${J[@]}" $API/databricks/clusters   -d "{\"credentials\": $DBX}"
+curl -s -X POST "${J[@]}" $API/databricks/pipelines  -d "{\"credentials\": $DBX}"                   # DLT / Lakeflow
+curl -s -X POST "${J[@]}" $API/databricks/warehouses -d "{\"credentials\": $DBX}"                   # also used by copy_data
+curl -s -X POST "${J[@]}" $API/databricks/catalogs   -d "{\"credentials\": $DBX}"
+curl -s -X POST "${J[@]}" $API/databricks/catalogs/altryxtodatabricks_accelarator_01/schemas -d "{\"credentials\": $DBX}"
+curl -s -X POST "${J[@]}" $API/databricks/catalogs/altryxtodatabricks_accelarator_01/schemas/flip_local_test/tables -d "{\"credentials\": $DBX}"
+curl -s -X POST "${J[@]}" $API/databricks/secret-scopes -d "{\"credentials\": $DBX}"                # key names only
+
+curl -s -X POST "${J[@]}" $API/fabric/workspaces -d "{\"credentials\": $FAB}"
+curl -s -X POST "${J[@]}" $API/fabric/workspaces/Alteryx_Fabric/lakehouses -d "{\"credentials\": $FAB}"  # id or name
 ```
+
+The full set, with every option, is in [`api-curl-reference.md`](api-curl-reference.md).
 
 Every list says where its ids go: `selection_key` and `id_field`. For example, jobs returns
 `"selection_key": "jobs", "id_field": "job_id"`. Put the picked values into `source.selection`:
@@ -270,7 +279,7 @@ Every list says where its ids go: `selection_key` and `id_field`. For example, j
 curl -s -X POST $API/migrations -H 'content-type: application/json' -d '{
   "source": {
     "type": "databricks",
-    "credentials": {"host": "https://adb-...", "token": "dapi..."},
+    "credentials": {"host": "https://adb-...", "client_id": "<sp-app-id>", "client_secret": "<sp-secret>"},
     "selection": {
       "notebooks": ["/Workspace/Shared/etl/load_sales", "/Repos/team/reporting"],
       "jobs": ["123456"],
@@ -292,7 +301,7 @@ with one direct lookup. A folder path selects every notebook under it, and `cata
 selects all of its tables. Kinds you leave out are not migrated. Anything that can't be read (a
 deleted job, a missing permission) shows up in the job's `inventory.warnings`.
 
-Alternatively, `GET /databricks/inventory?path=...&catalog=...&schema=...` returns the whole
+Alternatively, `POST /databricks/inventory` (body: credentials, `workspace_paths`, `catalogs`, `schemas`) returns the whole
 inventory in the engine's format. Send it, or a trimmed copy of its `assets`, as `assessment` in
 `POST /migrations` to skip discovery completely.
 
@@ -339,8 +348,7 @@ If preflight has errors, the job fails with `validation_failed` and the error li
 mapping and run a new migration, or pass `"force": true` if you accept the risk. Deploys are
 idempotent: re-running updates the existing items.
 
-Other credential options: `"access_token": "<bearer>"`. In development, with
-`FABRIC_ALLOW_AZ_CLI=true` after `az login`, use `"use_az_cli": true`.
+Fabric accepts a service principal only (`tenant_id`, `client_id`, `client_secret`).
 
 **C3. Validate data after the copy** (see the runbook):
 
@@ -369,7 +377,7 @@ lakehouse by name.
 
 Requirements beyond Scenario C:
 - a Databricks **SQL warehouse** the credentials can use (stopped warehouses auto-start);
-- a Fabric **service principal**: a bare `access_token` cannot write to OneLake;
+- a Fabric **service principal** (the only Fabric credential the service accepts);
 - a Fabric capacity that can run notebooks (the loader runs as a Fabric notebook job);
 - network access to `*.azuredatabricks.net`, `api.fabric.microsoft.com`,
   `onelake.dfs.fabric.microsoft.com`, `login.microsoftonline.com` and, for
@@ -506,7 +514,7 @@ Stop the server with Ctrl+C. Jobs still running at that moment are marked
 | `502 … failed -> 403 Forbidden` on every call, even with valid credentials | a corporate or sandbox egress proxy blocks the host (Databricks, Fabric, OneLake, Azure OpenAI): allow the domains listed in Scenario D |
 | `data_copy.failed > 0`, item `Data export failed … TABLE_OR_VIEW_NOT_FOUND` / permission | the credentials cannot SELECT that table on the SQL warehouse |
 | item `Data export failed … result download failed` | `*.blob.core.windows.net` unreachable: allow it, or set `DATA_COPY_DISPOSITION=INLINE` (≤ 25 MiB per table) |
-| `OneLake … 401/403` | use a service principal (not a bare Fabric access_token) that is a Contributor on the workspace |
+| `OneLake … 401/403` | the service principal must be a Contributor on the workspace |
 | item `Data load failed … loader notebook … Failed` | open `load_migrated_data_<lakehouse>` in Fabric and run it to see the Spark error; exported files stay in `Files/dbx_migration` |
 | `Fabric workspace '…' not found` | the service principal is not a member of the workspace, or the tenant setting "Service principals can use Fabric APIs" is off |
 | `Address already in use` on 8000 | another server (or `make up`) is running: `make down`, or `uv run uvicorn app.main:app --port 8001` |

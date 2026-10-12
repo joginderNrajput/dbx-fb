@@ -8,9 +8,7 @@ from pydantic import ValidationError
 from tests.conftest import make_settings
 
 
-@pytest.mark.parametrize(
-    "flag", ["AUTH_DISABLED", "FABRIC_ALLOW_AZ_CLI", "ALLOW_ENV_CREDENTIALS", "ALLOW_PRIVATE_HOSTS"]
-)
+@pytest.mark.parametrize("flag", ["AUTH_DISABLED", "ALLOW_ENV_CREDENTIALS", "ALLOW_PRIVATE_HOSTS"])
 def test_dev_flags_refused_in_production(tmp_path: Path, flag: str) -> None:
     with pytest.raises(ValidationError, match=flag):
         make_settings(

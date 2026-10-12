@@ -281,7 +281,12 @@ def test_connection_checks(client: TestClient) -> None:
             "/api/v1/connections/databricks/test",
             json={"credentials": {"host": HOST, "token": "dapi"}},
         )
-        assert r.json() == {"ok": True, "host": HOST, "user": "ana@example.com"}
+        assert r.json() == {
+            "ok": True,
+            "host": HOST,
+            "auth_type": "personal_access_token",
+            "user": "ana@example.com",
+        }
         r = client.post(
             "/api/v1/connections/fabric/test", json={"credentials": SP, "workspace_id": "ws-1"}
         )

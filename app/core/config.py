@@ -77,18 +77,17 @@ class Settings(BaseSettings):
     # Fabric job polling (loader / view notebooks run on demand).
     FABRIC_JOB_POLL_S: PositiveFloat = 10.0
     FABRIC_JOB_TIMEOUT_S: PositiveInt = 3600
-    # Dev-only: when a request carries no Fabric credentials, take a token from `az login`.
-    FABRIC_ALLOW_AZ_CLI: bool = False
 
     # ── dev credential fallbacks (refused in production, spec §8.2) ─
     # Lets a request omit credentials (or use env://NAME references) and fall back to the values
     # below. Production callers must send credentials per request; they are never persisted.
     ALLOW_ENV_CREDENTIALS: bool = False
     DATABRICKS_HOST: str = ""
+    # Databricks: CLIENT_ID + CLIENT_SECRET (service principal) win over DATABRICKS_TOKEN when both are set.
     DATABRICKS_TOKEN: SecretStr | None = None
     DATABRICKS_CLIENT_ID: str = ""
     DATABRICKS_CLIENT_SECRET: SecretStr | None = None
-    FABRIC_TOKEN: SecretStr | None = None
+    # Fabric: service principal only.
     FABRIC_TENANT_ID: str = ""
     FABRIC_CLIENT_ID: str = ""
     FABRIC_CLIENT_SECRET: SecretStr | None = None
@@ -132,7 +131,6 @@ class Settings(BaseSettings):
             return self
         for flag in (
             "AUTH_DISABLED",
-            "FABRIC_ALLOW_AZ_CLI",
             "ALLOW_ENV_CREDENTIALS",
             "ALLOW_PRIVATE_HOSTS",
         ):

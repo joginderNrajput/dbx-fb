@@ -180,9 +180,14 @@ Uploaded files first (exact path with each extension, then any file with the sam
 outside the uploads), then the Databricks export API if credentials were given.
 
 ### 5.4 Fabric credentials
-`access_token`, or `tenant_id + client_id + client_secret` (Entra ID client-credentials, scope
-`FABRIC_SCOPE`), or `use_az_cli` (development only). `POST /connections/fabric/test` and
-`POST /connections/databricks/test` validate credentials without starting a migration.
+Service principal **only**: `{tenant_id, client_id, client_secret}`, all required (Entra ID
+client-credentials; scope `FABRIC_SCOPE` for the Fabric API, `ONELAKE_SCOPE` for OneLake). The
+tenant must be a GUID or a domain. Databricks credentials (§5.1) are a service principal
+`{host, client_id, client_secret}` (OAuth M2M, used whenever both are present; the token is then
+ignored) or `{host, personal_access_token}` (alias `token`); half a service principal is a 422.
+All credentials travel in request bodies only (ADR 0008). `POST /connections/fabric/test` and
+`POST /connections/databricks/test` (which reports the `auth_type` used) validate credentials
+without starting a migration.
 
 ### 5.5 Deploy — `options.deploy` or `POST /migrations/{id}/deploy`
 Runs preflight first and stops on errors unless forced. Ensures lakehouses (schemas enabled),
@@ -196,11 +201,11 @@ Inspection: `GET /migrations`, `/{id}`, `/{id}/items`, `/{id}/preflight`, `/{id}
 `/{id}/agent-trace`. Changes: `POST /{id}/cancel`, `POST /{id}/results` (record manual work),
 `POST /{id}/validation`, `DELETE /{id}`.
 
-### 5.10 Browse API and selection — `GET /databricks/*`, `GET /fabric/*`
+### 5.10 Browse API and selection — `POST /databricks/*`, `POST /fabric/*`
 Read-only listings to choose what to migrate (and where to), so the migration does not crawl the
-workspace again. Credentials go in headers (never the query string): `X-Databricks-Host` +
-`X-Databricks-Token` or `X-Databricks-Client-Id`/`-Secret`; `X-Fabric-Tenant-Id`/`-Client-Id`/
-`-Client-Secret` or `X-Fabric-Access-Token`. Same host guards and dev env fallback as §5.1.
+workspace again. They are `POST` because the credentials travel in the JSON body (§5.4,
+ADR 0008); filters are body fields too (shown as `?name=` below for brevity), path segments only
+name a resource. Same host guards and dev env fallback as §5.1.
 
 | Endpoint | Lists | `selection` key ← field |
 |---|---|---|
