@@ -35,7 +35,7 @@ defaults, which means **auth enabled**, so `/api/v1` answers 401. For local test
 |---|---|
 | `OUTPUT_DIR` | ignored: compose pins it to `/app/output`, mounted from `./output` on the host |
 | `ANTHROPIC_API_KEY` / `LLM_*` | set one provider to try agent mode (Claude needs the `ai` extra, included by default; Azure OpenAI needs nothing extra) |
-| `API_PORT` | host port, default 8000 |
+| `API_PORT` | host port, default 9093 |
 | `DOCKER_EXTRAS` | `ai` (default) or empty to build without the Anthropic SDK |
 
 ---
@@ -57,12 +57,12 @@ Check it:
 
 ```bash
 docker compose ps                        # STATUS should become "Up … (healthy)" within ~20s
-curl -s localhost:8000/healthz           # {"status":"ok"}
-curl -s localhost:8000/readyz            # storage ok; AI configured or not
+curl -s localhost:9093/healthz           # {"status":"ok"}
+curl -s localhost:9093/readyz            # storage ok; AI configured or not
 make logs                                # = docker compose logs -f
 ```
 
-Swagger UI: <http://localhost:8000/docs>.
+Swagger UI: <http://localhost:9093/docs>.
 
 The default compose service mounts `./app` read-only and runs uvicorn with `--reload`, so code
 edits on the host restart the server inside the container. To run the immutable image exactly as
@@ -74,10 +74,10 @@ it would ship, use plain `docker run` (section 6).
 
 The API is the same as in the host flow, so every scenario in
 [`local-testing-guide.md` §5–§10](local-testing-guide.md#5-scenario-a--offline-notebooks-no-databricks-credentials)
-works unchanged against `http://localhost:8000`. The essentials:
+works unchanged against `http://localhost:9093`. The essentials:
 
 ```bash
-API=http://localhost:8000/api/v1
+API=http://localhost:9093/api/v1
 wait_job() { while :; do S=$(curl -s $API/migrations/$1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])'); echo "$S"; [ "$S" = queued ] || [ "$S" = running ] || break; sleep 2; done; }
 ```
 
@@ -157,14 +157,14 @@ docker compose build                     # or: docker build -t dbx2fabric-app:lo
 make hash-key                            # needs uv on the host; or:
 docker run --rm dbx2fabric-app:local python -c "from app.core.security import *;k=generate_api_key();print(k);print(hash_api_key(k))"
 
-docker run -d --name dbx2fabric -p 8000:8000 \
+docker run -d --name dbx2fabric -p 9093:9093 \
   -e APP_ENV=production -e AUTH_DISABLED=false \
   -e API_KEY_HASHES='<argon2 hash>' \
   -v "$PWD/output:/app/output" \
   dbx2fabric-app:local
 
-curl -s localhost:8000/api/v1/migrations                                 # 401
-curl -s -H "X-API-Key: <key>" localhost:8000/api/v1/migrations           # 200
+curl -s localhost:9093/api/v1/migrations                                 # 401
+curl -s -H "X-API-Key: <key>" localhost:9093/api/v1/migrations           # 200
 docker inspect --format '{{.State.Health.Status}}' dbx2fabric           # healthy
 docker rm -f dbx2fabric
 ```
@@ -197,7 +197,7 @@ and smoke-tests `/healthz` in a container.
 | `.env` change has no effect | `docker compose up -d --force-recreate` |
 | Build fails at `uv sync --frozen` | `uv.lock` is out of date with `pyproject.toml`: run `uv lock` on the host and commit it |
 | Build fails with `CERTIFICATE_VERIFY_FAILED` behind a corporate TLS proxy | the build cannot reach PyPI through your proxy: build where PyPI is reachable, or add your proxy CA to the **builder** stage only (`COPY ca.crt` + `PIP_CERT` / `SSL_CERT_FILE`) |
-| `Bind for 0.0.0.0:8000 failed` | port taken (perhaps `make dev`): stop it, or `API_PORT=8001 make up` |
+| `Bind for 0.0.0.0:9093 failed` | port taken (perhaps `make dev`): stop it, or `API_PORT=9094 make up` |
 | Agent mode returns 503 | no LLM configured in `.env`, or Claude selected with an image built with `DOCKER_EXTRAS=""` |
 | Every Databricks / Fabric call fails with `403 Forbidden` | an egress proxy or firewall blocks the host from the container: allow `*.azuredatabricks.net`, `api.fabric.microsoft.com`, `onelake.dfs.fabric.microsoft.com`, `login.microsoftonline.com`, `*.blob.core.windows.net` (and your Azure OpenAI host) |
 | Reload loops while jobs run | must not happen: `--reload-dir /app/app` watches code only; check you did not change the compose command |

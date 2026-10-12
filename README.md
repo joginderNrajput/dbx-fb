@@ -17,11 +17,11 @@ service and held to it by parity tests.
 ```bash
 cp .env.example .env          # local defaults: auth disabled, output in ./output
 make install                  # uv venv with runtime + ai + dev extras
-make dev                      # API on http://localhost:8000  (docs: /docs)
+make dev                      # API on http://localhost:9093  (docs: /docs)
 # or with Docker:
 make up
 
-curl -F "files=@my_notebook.ipynb" -F 'config={}' http://localhost:8000/api/v1/migrations/upload
+curl -F "files=@my_notebook.ipynb" -F 'config={}' http://localhost:9093/api/v1/migrations/upload
 ```
 
 Then follow the job at `GET /api/v1/migrations/{id}`. When it finishes, open `/report` or

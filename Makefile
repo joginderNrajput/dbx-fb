@@ -40,7 +40,7 @@ snapshots:  ## Regenerate golden notebooks - then REVIEW the diff
 	@echo "Golden files rewritten under tests/fixtures/expected_notebooks: review 'git diff' before committing."
 
 dev:  ## Run the API on the host with auto-reload (reads .env)
-	uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
+	uv run uvicorn app.main:app --host 0.0.0.0 --port 9093 --reload --reload-dir app
 
 cli-run:  ## Offline migration without the API: make cli-run SRC=./notebooks [OUT=migration_out]
 	@test -n "$(SRC)" || (echo "usage: make cli-run SRC=<folder of notebooks> [OUT=migration_out]"; exit 1)
@@ -52,7 +52,7 @@ hash-key:  ## Generate an API key and its Argon2id hash for API_KEY_HASHES
 build:  ## Docker: build the image
 	$(COMPOSE) build
 
-up:  ## Docker: build and start the service on :8000
+up:  ## Docker: build and start the service on :9093
 	@mkdir -p output && chmod 777 output
 	$(COMPOSE) up -d --build
 

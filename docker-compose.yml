@@ -19,7 +19,7 @@ services:
       - ./output:/app/output
       - ./app:/app/app:ro                # live code for --reload; remove for an immutable run
     # --reload-dir /app/app: generated notebooks under /app/output never trigger a restart
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/app"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9093", "--reload", "--reload-dir", "/app/app"]
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "${API_PORT:-9093}:9093"
     restart: unless-stopped

@@ -32,6 +32,6 @@ jobs:
         run: docker build -t dbx2fabric-app:ci .
       - name: Smoke test /healthz
         run: |
-          docker run -d --name app -e AUTH_DISABLED=true -p 8000:8000 dbx2fabric-app:ci
-          for i in $(seq 1 30); do curl -fsS localhost:8000/healthz && exit 0; sleep 2; done
+          docker run -d --name app -e AUTH_DISABLED=true -p 9093:9093 dbx2fabric-app:ci
+          for i in $(seq 1 30); do curl -fsS localhost:9093/healthz && exit 0; sleep 2; done
           docker logs app; exit 1

@@ -93,23 +93,23 @@ make test-e2e
 ## 4. Start the API
 
 ```bash
-make dev        # uvicorn app.main:app --reload on http://localhost:8000
+make dev        # uvicorn app.main:app --reload on http://localhost:9093
 ```
 
 Check it:
 
 ```bash
-curl -s localhost:8000/healthz          # {"status":"ok"}
-curl -s localhost:8000/readyz           # storage ok; reports whether AI is configured
+curl -s localhost:9093/healthz          # {"status":"ok"}
+curl -s localhost:9093/readyz           # storage ok; reports whether AI is configured
 ```
 
-Interactive API docs (try every endpoint from the browser): <http://localhost:8000/docs>.
+Interactive API docs (try every endpoint from the browser): <http://localhost:9093/docs>.
 Every endpoint as a copy-paste curl command, importable into Postman: [`api-curl-reference.md`](api-curl-reference.md).
 
 The rest of this guide uses these shell helpers:
 
 ```bash
-API=http://localhost:8000/api/v1
+API=http://localhost:9093/api/v1
 # poll a job until it finishes
 wait_job() { while :; do S=$(curl -s $API/migrations/$1 | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])'); echo "$S"; [ "$S" = queued ] || [ "$S" = running ] || break; sleep 2; done; }
 ```
@@ -517,4 +517,4 @@ Stop the server with Ctrl+C. Jobs still running at that moment are marked
 | `OneLake … 401/403` | the service principal must be a Contributor on the workspace |
 | item `Data load failed … loader notebook … Failed` | open `load_migrated_data_<lakehouse>` in Fabric and run it to see the Spark error; exported files stay in `Files/dbx_migration` |
 | `Fabric workspace '…' not found` | the service principal is not a member of the workspace, or the tenant setting "Service principals can use Fabric APIs" is off |
-| `Address already in use` on 8000 | another server (or `make up`) is running: `make down`, or `uv run uvicorn app.main:app --port 8001` |
+| `Address already in use` on 9093 | another server (or `make up`) is running: `make down`, or `uv run uvicorn app.main:app --port 9094` |

@@ -26,8 +26,8 @@ WORKDIR /app
 COPY app/ ./app/
 RUN mkdir -p /app/output && useradd -m -u 10001 dbx2fabric && chown -R dbx2fabric:dbx2fabric /app
 USER dbx2fabric
-EXPOSE 8000
+EXPOSE 9093
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
-  CMD python -c "import urllib.request;urllib.request.urlopen('http://localhost:8000/healthz')"
+  CMD python -c "import urllib.request;urllib.request.urlopen('http://localhost:9093/healthz')"
 # ONE worker: jobs run in-process and cancellation/concurrency limits are per process (ADR 0005).
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9093", "--workers", "1"]

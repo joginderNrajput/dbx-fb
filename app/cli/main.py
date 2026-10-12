@@ -15,7 +15,7 @@ app = typer.Typer(help="Databricks -> Microsoft Fabric migration service", no_ar
 
 
 @app.command()
-def serve(host: str = "0.0.0.0", port: int = 8000, reload: bool = False) -> None:  # nosec B104
+def serve(host: str = "0.0.0.0", port: int = 9093, reload: bool = False) -> None:  # nosec B104
     """Run the HTTP API (same as `uvicorn app.main:app`)."""
     import uvicorn
 

@@ -20,7 +20,7 @@ import as is. No shell variables, heredocs or pipes: values come from Postman va
 
 | Variable | Example | Used for |
 |---|---|---|
-| `baseUrl` | `http://localhost:8000` | every request |
+| `baseUrl` | `http://localhost:9093` | every request |
 | `apiKey` | `local-dev` | `X-API-Key` header (any value when the server runs with `AUTH_DISABLED=true`; else a key from `make hash-key`) |
 | `dbx_host` | `https://adb-1234567890123456.7.azuredatabricks.net` | Databricks workspace URL |
 | `dbx_client_id` | service principal application id | Databricks **service principal** (leave empty to use the token) |
