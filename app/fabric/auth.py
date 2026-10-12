@@ -33,7 +33,15 @@ class FabricCredentials:
             )
 
 
-def acquire_token(creds: FabricCredentials, settings: Settings, http: httpx.Client) -> str:
+def acquire_token(
+    creds: FabricCredentials, settings: Settings, http: httpx.Client, *, scope: str | None = None
+) -> str:
+    """Token for the Fabric API (default) or another audience, e.g. OneLake (ONELAKE_SCOPE).
+
+    A caller-supplied ``access_token`` has one fixed audience; it is used as given, so OneLake
+    access with a bare Fabric token fails with 401 - use a service principal for copy_data.
+    """
+    scope = scope or settings.FABRIC_SCOPE
     if creds.access_token:
         return creds.access_token
     if creds.tenant_id and creds.client_id and creds.client_secret:
@@ -45,7 +53,7 @@ def acquire_token(creds: FabricCredentials, settings: Settings, http: httpx.Clie
                     "grant_type": "client_credentials",
                     "client_id": creds.client_id,
                     "client_secret": creds.client_secret,
-                    "scope": settings.FABRIC_SCOPE,
+                    "scope": scope,
                 },
             )
         except httpx.HTTPError as e:
@@ -72,7 +80,7 @@ def acquire_token(creds: FabricCredentials, settings: Settings, http: httpx.Clie
                     "account",
                     "get-access-token",
                     "--resource",
-                    "https://api.fabric.microsoft.com",
+                    scope.removesuffix("/.default"),
                     "--query",
                     "accessToken",
                     "-o",

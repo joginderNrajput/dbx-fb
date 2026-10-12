@@ -72,3 +72,40 @@ def test_body_size_limit(tmp_path: Path) -> None:
     with TestClient(create_app(make_settings(tmp_path, MAX_UPLOAD_MB=1))) as c:
         r = c.post("/api/v1/migrations/upload", files={"files": ("a.py", b"x" * (2 * 1024 * 1024))})
         assert r.status_code == 413 and r.json()["error"]["code"] == "payload_too_large"
+
+
+def test_llm_connection_check(tmp_path: Path) -> None:
+    import httpx
+    import respx
+
+    s = make_settings(
+        tmp_path,
+        LLM_PROVIDER="azure_openai",
+        LLM_BASE_URL="https://r.openai.azure.com",
+        LLM_API_KEY="k",
+        LLM_MODEL="dep",
+    )
+    with TestClient(create_app(s)) as c, respx.mock() as router:
+        router.post(
+            url__startswith="https://r.openai.azure.com/openai/deployments/dep/chat/completions"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "ready"},
+                        }
+                    ]
+                },
+            )
+        )
+        assert c.post("/api/v1/connections/llm/test").json() == {
+            "ok": True,
+            "provider": "azure_openai",
+            "model": "dep",
+            "reply": "ready",
+        }
+    with TestClient(create_app(make_settings(tmp_path))) as c:
+        assert c.post("/api/v1/connections/llm/test").status_code == 503

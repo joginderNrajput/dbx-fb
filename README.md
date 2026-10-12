@@ -5,8 +5,9 @@ workspace (Databricks credentials), or upload exported notebooks (`.ipynb`, `.py
 or a `.zip`) when you don't want to share credentials. It inventories, plans and converts
 notebooks, jobs, tables, views, functions, secrets and more into Fabric artifacts. It also writes
 a runbook, a post-migration report and validation notebooks. Given Fabric credentials, it deploys
-everything to your workspace. In `agent` mode, Claude drives the migration and finishes the cells
-the rules engine could not convert.
+everything to your workspace and, with `copy_data`, copies the table data into the lakehouse and
+validates row counts. In `agent` mode, an LLM (Claude or Azure OpenAI) drives the migration
+and finishes the cells the rules engine could not convert.
 
 Conversion behaviour is that of the reference tool `dbx2fabric_migrate_v4.py`, ported into the
 service and held to it by parity tests.

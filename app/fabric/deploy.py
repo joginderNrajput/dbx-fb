@@ -69,11 +69,17 @@ def deploy(
         | set(cfg["catalog_to_lakehouse"].values())
         | {cfg["lakehouse_default"]}
     )
+    no_schemas: set[str] = set()
     for lh in sorted(lhs):
         ids["LH:" + lh], how = fab.ensure(
             ws, "lakehouses", "Lakehouse", lh, {"creationPayload": {"enableSchemas": True}}
         )
         log.info("fabric_item_ensured", kind="lakehouse", name=lh, how=how)
+        try:
+            if not fab.lakehouse_has_schemas(ws, ids["LH:" + lh]):
+                no_schemas.add(lh)
+        except FabricError:
+            pass  # property read is advisory; deploy continues
     if any(i["target_type"] == "Warehouse" for i in items.values()):
         ids["WH"], how = fab.ensure(ws, "warehouses", "Warehouse", cfg["warehouse_name"])
         log.info("fabric_item_ensured", kind="warehouse", name=cfg["warehouse_name"], how=how)
@@ -110,6 +116,12 @@ def deploy(
                 if iid in items:
                     items[iid]["target_id"] = nid
             mark(e, True)
+            if lh in no_schemas:
+                for iid in e["items"]:
+                    if iid in items:
+                        items[iid]["reasons"].append(
+                            f"Lakehouse {lh} is not schema-enabled: lakehouse.schema.table names will not resolve; use a schema-enabled lakehouse"
+                        )
             log.info("fabric_item_ensured", kind="notebook", name=e["name"], how=how)
         except FabricError as ex:
             mark(e, False, ex.message)
@@ -190,3 +202,25 @@ def deploy(
     ledger["deployed"] = datetime.now().isoformat(timespec="seconds")
     save_json(out / "ledger.json", ledger)
     return ledger
+
+
+def deploy_notebook(
+    fab: Fabric, ws: str, name: str, nb: dict[str, Any], lakehouse: str, lakehouse_id: str
+) -> str:
+    """Create or update one notebook with its default lakehouse attached; returns the item id."""
+    nb["metadata"]["dependencies"] = {
+        "lakehouse": {
+            "default_lakehouse": lakehouse_id,
+            "default_lakehouse_name": lakehouse,
+            "default_lakehouse_workspace_id": ws,
+        }
+    }
+    definition = {
+        "format": "ipynb",
+        "parts": [
+            {"path": "notebook-content.ipynb", "payload": b64(nb), "payloadType": "InlineBase64"}
+        ],
+    }
+    nid, how = fab.ensure(ws, "notebooks", "Notebook", name, definition=definition)
+    log.info("fabric_item_ensured", kind="notebook", name=name, how=how)
+    return nid

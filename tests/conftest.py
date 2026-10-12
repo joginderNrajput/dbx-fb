@@ -69,6 +69,8 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
         "ALLOW_PRIVATE_HOSTS": False,
         "ANTHROPIC_API_KEY": None,
         "FABRIC_LRO_POLL_S": 0.01,
+        "FABRIC_JOB_POLL_S": 0.01,
+        "DATA_COPY_POLL_S": 0.01,
         "DATABRICKS_MAX_RETRIES": 0,
     }
     base.update(overrides)

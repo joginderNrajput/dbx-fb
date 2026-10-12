@@ -7,6 +7,7 @@ closure; the persisted JobRecord only notes that they were supplied (spec §8.2)
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from app.agents.cell_fixer import CellFixer
@@ -45,15 +46,20 @@ def build_databricks_credentials(
     host = c.host
     token = resolve_secret(c.token, settings, field=f"{field}.token")
     secret = resolve_secret(c.client_secret, settings, field=f"{field}.client_secret")
-    if not host and not token and not c.client_id and settings.ALLOW_ENV_CREDENTIALS:
+    client_id = c.client_id
+    if not host and not token and not client_id and settings.ALLOW_ENV_CREDENTIALS:
         host = settings.DATABRICKS_HOST
         token = resolve_secret(settings.DATABRICKS_TOKEN, settings, field=f"{field}.token")
-    if not host and not token and not c.client_id:
+        client_id = settings.DATABRICKS_CLIENT_ID or None
+        secret = resolve_secret(
+            settings.DATABRICKS_CLIENT_SECRET, settings, field=f"{field}.client_secret"
+        )
+    if not host and not token and not client_id:
         return None
     host = ensure_safe_url(host, field=f"{field}.host", allow_private=settings.ALLOW_PRIVATE_HOSTS)
     try:
         return DatabricksCredentials(
-            host=host, token=token, client_id=c.client_id, client_secret=secret
+            host=host, token=token, client_id=client_id, client_secret=secret
         )
     except ValidationFailed as e:
         raise ValidationFailed(e.message, field=f"{field}.token") from e
@@ -92,6 +98,14 @@ def build_fabric_credentials(
         raise ValidationFailed(e.message, field=field) from e
 
 
+@dataclass(frozen=True)
+class _Target:
+    fabric: FabricCredentials | None
+    workspace_id: str | None
+    workspace_name: str | None
+    lakehouse: str | None
+
+
 class MigrationService:
     def __init__(
         self,
@@ -112,48 +126,56 @@ class MigrationService:
         if options.mode != "agent" and not options.ai_fix:
             return None
         if not self.settings.ai_configured:
-            raise AIUnavailable("mode=agent and ai_fix need ANTHROPIC_API_KEY on the server")
+            raise AIUnavailable(
+                "mode=agent and ai_fix need an LLM configured on the server (ANTHROPIC_API_KEY, or LLM_PROVIDER=azure_openai with LLM_BASE_URL/LLM_API_KEY/LLM_MODEL)"
+            )
         return self.llm_factory(
             self.settings
         )  # fail now (missing extra) rather than inside the job
 
-    def _target(
-        self, target: Any, options: MigrationOptionsIn, mapping: dict[str, Any]
-    ) -> tuple[FabricCredentials | None, str | None]:
+    def _target(self, target: Any, options: MigrationOptionsIn, mapping: dict[str, Any]) -> _Target:
         fabric = build_fabric_credentials(
             target.credentials, self.settings, field="target.credentials"
         )
+        env = self.settings.ALLOW_ENV_CREDENTIALS
         ws = (
             target.workspace_id
             or mapping.get("workspace_id")
-            or (self.settings.FABRIC_WORKSPACE_ID if self.settings.ALLOW_ENV_CREDENTIALS else "")
+            or (self.settings.FABRIC_WORKSPACE_ID if env else "")
             or None
         )
-        if options.deploy:
+        ws_name = (
+            target.workspace_name or (self.settings.FABRIC_WORKSPACE_NAME if env else "") or None
+        )
+        if options.deploy or getattr(options, "copy_data", False):
             if not fabric:
                 raise ValidationFailed(
-                    "options.deploy needs Fabric credentials", field="target.credentials"
+                    "options.deploy / copy_data need Fabric credentials", field="target.credentials"
                 )
-            if not ws:
+            if not ws and not ws_name:
                 raise ValidationFailed(
-                    "options.deploy needs target.workspace_id", field="target.workspace_id"
+                    "options.deploy / copy_data need target.workspace_id or target.workspace_name",
+                    field="target.workspace_id",
                 )
-        return fabric, ws
+        lakehouse = target.lakehouse or (self.settings.FABRIC_LAKEHOUSE if env else "") or None
+        return _Target(fabric, ws, ws_name, lakehouse)
 
     def _options_record(
         self,
         options: MigrationOptionsIn,
-        ws: str | None,
-        fabric: FabricCredentials | None,
+        t: _Target,
         dbx: DatabricksCredentials | None,
     ) -> dict[str, Any]:
         return {
             "deploy": options.deploy,
+            "copy_data": options.copy_data,
             "deploy_only": list(options.deploy_only),
             "force_deploy": options.force_deploy,
             "ai_fix": options.ai_fix,
-            "workspace_id": ws,
-            "fabric_credentials": bool(fabric),
+            "workspace_id": t.workspace_id,
+            "workspace_name": t.workspace_name,
+            "lakehouse": t.lakehouse,
+            "fabric_credentials": bool(t.fabric),
             "databricks_credentials": bool(dbx),
             "databricks_host": dbx.host if dbx else None,
         }
@@ -171,7 +193,7 @@ class MigrationService:
             )
         if req.assessment is not None and not isinstance(req.assessment.get("assets"), list):
             raise ValidationFailed("assessment must have an 'assets' list", field="assessment")
-        fabric, ws = self._target(req.target, req.options, req.mapping)
+        t = self._target(req.target, req.options, req.mapping)
         job_id = new_job_id()
         s = req.source
         spec = SessionSpec(
@@ -185,6 +207,7 @@ class MigrationService:
                 include_jobs=s.include_jobs,
                 include_tables=s.include_tables,
                 catalogs=s.catalogs,
+                schemas=s.schemas,
                 include_secret_scopes=s.include_secret_scopes,
                 include_clusters=s.include_clusters,
                 max_notebooks=min(
@@ -193,8 +216,12 @@ class MigrationService:
                 ),
             ),
             mapping_overrides=req.mapping,
-            fabric=fabric,
-            workspace_id=ws,
+            fabric=t.fabric,
+            workspace_id=t.workspace_id,
+            workspace_name=t.workspace_name,
+            target_lakehouse=t.lakehouse,
+            copy_data=req.options.copy_data,
+            warehouse_id=s.warehouse_id,
             deploy_requested=req.options.deploy,
             deploy_only=list(req.options.deploy_only),
             force_deploy=req.options.force_deploy,
@@ -205,7 +232,7 @@ class MigrationService:
                 id=job_id,
                 mode=req.options.mode,
                 source_kind="databricks",
-                options=self._options_record(req.options, ws, fabric, dbx),
+                options=self._options_record(req.options, t, dbx),
             )
         )
         self._start(rec, spec, req.options, llm)
@@ -232,8 +259,13 @@ class MigrationService:
                 )
             if res.mapping:
                 validate_overrides(res.mapping, field="files.mapping.json")
+            if cfg.options.copy_data and dbx is None:
+                raise ValidationFailed(
+                    "options.copy_data needs Databricks credentials in config.databricks (data is read through a SQL warehouse)",
+                    field="config.databricks",
+                )
             mapping = {**(res.mapping or {}), **cfg.mapping}
-            fabric, ws = self._target(cfg.target, cfg.options, mapping)
+            t = self._target(cfg.target, cfg.options, mapping)
         except AppError:
             self.store.delete_prefix(keys.job_prefix(job_id))
             raise
@@ -246,8 +278,11 @@ class MigrationService:
             assessment=res.assessment,
             uploaded_mapping=res.mapping or {},
             mapping_overrides=cfg.mapping,
-            fabric=fabric,
-            workspace_id=ws,
+            fabric=t.fabric,
+            workspace_id=t.workspace_id,
+            workspace_name=t.workspace_name,
+            target_lakehouse=t.lakehouse,
+            copy_data=cfg.options.copy_data,
             deploy_requested=cfg.options.deploy,
             deploy_only=list(cfg.options.deploy_only),
             force_deploy=cfg.options.force_deploy,
@@ -258,7 +293,7 @@ class MigrationService:
                 id=job_id,
                 mode=cfg.options.mode,
                 source_kind="upload",
-                options=self._options_record(cfg.options, ws, fabric, dbx),
+                options=self._options_record(cfg.options, t, dbx),
                 upload={
                     "notebooks": len(res.notebooks),
                     "skipped": res.skipped[:200],
@@ -284,15 +319,32 @@ class MigrationService:
         )
         if not fabric:
             raise ValidationFailed("Fabric credentials are required", field="target.credentials")
+        dbx = None
+        if req.copy_data:
+            dbx = build_databricks_credentials(req.databricks, self.settings, field="databricks")
+            if dbx is None:
+                raise ValidationFailed(
+                    "copy_data needs Databricks credentials (databricks.host + token or client_id/client_secret)",
+                    field="databricks",
+                )
         ws = req.target.workspace_id or rec.options.get("workspace_id")
-        if not ws:
-            raise ValidationFailed("target.workspace_id is required", field="target.workspace_id")
+        ws_name = req.target.workspace_name or rec.options.get("workspace_name")
+        if not ws and not ws_name:
+            raise ValidationFailed(
+                "target.workspace_id or target.workspace_name is required",
+                field="target.workspace_id",
+            )
         spec = SessionSpec(
             source_kind=rec.source_kind,
             sources_dir=self.store.path(keys.job_sources(job_id)),
             out_dir=out,
             fabric=fabric,
             workspace_id=ws,
+            workspace_name=ws_name,
+            target_lakehouse=req.target.lakehouse,
+            databricks=dbx,
+            copy_data=req.copy_data,
+            warehouse_id=req.warehouse_id,
             deploy_requested=True,
             deploy_only=list(req.only),
             force_deploy=req.force,
@@ -304,6 +356,7 @@ class MigrationService:
                 options={
                     **rec.options,
                     "workspace_id": ws,
+                    "workspace_name": ws_name,
                     "deploy": True,
                     "fabric_credentials": True,
                 },
@@ -319,6 +372,11 @@ class MigrationService:
             self.repo.update(job_id, only_if_active=True, preflight=_counts(issues))
             summary = session.deploy()
             self.repo.update(job_id, only_if_active=True, summary=summary)
+            if spec.copy_data:
+                data = session.copy_data()
+                self.repo.update(
+                    job_id, only_if_active=True, data_copy=data, summary=session.report()
+                )
 
         self.runner.submit(job_id, work)
         return rec
@@ -381,6 +439,9 @@ class MigrationService:
         self.repo.update(job_id, only_if_active=True, preflight=_counts(issues))
         if s.spec.deploy_requested:
             summary = s.deploy()
+        if s.spec.copy_data:
+            data = s.copy_data()
+            self.repo.update(job_id, only_if_active=True, data_copy=data)
         summary = s.report()
         self.repo.update(job_id, only_if_active=True, summary=summary)
 
@@ -388,7 +449,10 @@ class MigrationService:
         self, job_id: str, s: MigrationSession, llm: LLMClient, options: MigrationOptionsIn
     ) -> None:
         trace_key = keys.agent_trace(job_id)
-        agent: dict[str, Any] = {"model": self.settings.AI_MODEL}
+        agent: dict[str, Any] = {
+            "provider": self.settings.LLM_PROVIDER,
+            "model": self.settings.ai_model,
+        }
         try:
             res = run_agent(
                 s,
@@ -414,6 +478,11 @@ class MigrationService:
         self.repo.update(job_id, only_if_active=True, inventory=_inventory(s))
         issues = s.run_preflight()
         agent["deployed"] = s.deployed
+        agent["data_copied"] = "copy_data" in s.done
+        if s.spec.copy_data and "copy_data" not in s.done:
+            agent["copy_data_note"] = (
+                "copy_data was requested but the agent did not copy data; use POST /deploy with copy_data after review"
+            )
         if s.spec.deploy_requested and not s.deployed:
             agent["deploy_note"] = (
                 "deploy was requested but the agent did not deploy (see summary); use POST /deploy after review"

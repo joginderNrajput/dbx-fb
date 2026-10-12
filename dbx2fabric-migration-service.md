@@ -28,9 +28,10 @@ Two execution modes:
 | Mode | Who drives the stages | Needs |
 |---|---|---|
 | `pipeline` (default) | fixed order: inventory → plan → convert → preflight → [deploy] → report | nothing extra |
-| `agent` | Claude, through tools (§6): runs the stages, rewrites TODO cells, decides whether deploying is safe | `ANTHROPIC_API_KEY` + `ai` extra |
+| `agent` | an LLM, through tools (§6): runs the stages, rewrites TODO cells, decides whether deploying is safe | Claude (`ANTHROPIC_API_KEY` + `ai` extra) or Azure OpenAI (`LLM_PROVIDER=azure_openai`) |
 
-`options.ai_fix` (both modes) asks Claude to rewrite only the cells that still carry TODO markers.
+`options.ai_fix` (both modes) asks the LLM to rewrite only the cells that still carry TODO markers.
+`options.copy_data` also moves the **table data** into Fabric and validates row counts (§5.9).
 
 ### 1.2 Reference implementation
 
@@ -42,9 +43,9 @@ in ADR 0003 and nowhere else.
 
 ### 1.3 Out of scope
 
-Moving data itself (the service generates copy/shortcut/export artifacts that run inside
-Databricks and Fabric), secret values (never exportable), and dashboards/DLT redesign (reported as
-manual work with AI work orders).
+Secret values (never exportable), dashboards/DLT redesign (reported as manual work with AI work
+orders), and tables above `DATA_COPY_MAX_ROWS` (they keep the generated export/copy artifacts that
+run inside Databricks and Fabric).
 
 ---
 
@@ -159,9 +160,11 @@ large, 422 domain validation, 502 Databricks/Fabric upstream failure, 503 AI una
 
 ### 5.1 Live Databricks source — `POST /migrations`
 Body: `source {type: databricks, credentials {host, token | client_id+client_secret},
-workspace_paths, include_jobs, include_tables, catalogs, include_secret_scopes, include_clusters,
-max_notebooks}`, `target {workspace_id, credentials}`, `mapping {...}`, `options {mode, deploy,
-deploy_only, force_deploy, ai_fix, agent_instructions}`, optional `assessment`. The host must be
+workspace_paths, include_jobs, include_tables, catalogs, schemas, include_secret_scopes,
+include_clusters, max_notebooks, warehouse_id}`, `target {workspace_id | workspace_name,
+lakehouse, credentials}`, `mapping {...}`, `options {mode, deploy, deploy_only, force_deploy,
+ai_fix, copy_data, agent_instructions}`, optional `assessment`. `target.lakehouse` sends every
+catalog to one destination lakehouse (existing or created). The host must be
 public https (private hosts only with `ALLOW_PRIVATE_HOSTS` in development). Partial discovery
 failures (one schema, one path) become inventory warnings. → `202 {id, links}`.
 
@@ -193,6 +196,21 @@ Inspection: `GET /migrations`, `/{id}`, `/{id}/items`, `/{id}/preflight`, `/{id}
 `/{id}/agent-trace`. Changes: `POST /{id}/cancel`, `POST /{id}/results` (record manual work),
 `POST /{id}/validation`, `DELETE /{id}`.
 
+### 5.9 Data copy — `options.copy_data` (or `copy_data` on `POST /{id}/deploy`)
+For every table (MANAGED / EXTERNAL / MATERIALIZED_VIEW / STREAMING_TABLE; views are recreated,
+shortcut-served tables skipped):
+1. `COUNT(*)` then `SELECT *` on a Databricks SQL warehouse (`source.warehouse_id`, else the first
+   running one) through the Statement Execution API, `JSON_ARRAY` format, `DATA_COPY_DISPOSITION`
+   `EXTERNAL_LINKS` (presigned downloads without auth header) or `INLINE` (≤ 25 MiB).
+2. Each chunk becomes a JSON-lines file in OneLake `Files/<DATA_COPY_FOLDER>/<cat>/<schema>/<table>/`
+   (DFS API, token audience `ONELAKE_SCOPE`; needs a service principal or `az` token).
+3. A generated `load_migrated_data_<lakehouse>` notebook is deployed and run through the Fabric
+   job scheduler (`RunNotebook`). It casts every column back to its Databricks type, writes Delta
+   `schema.table` (`schema_table` in a lakehouse without schemas) and compares row counts.
+4. Its results file updates the ledger: equal counts → `migrated` with the validation attached;
+   otherwise `partial`. Then `create_views_<lakehouse>` runs so views exist over the loaded tables.
+Tables above `DATA_COPY_MAX_ROWS` are skipped with a reason. Failures are per table.
+
 ### 5.6 Single-asset conversion
 `POST /convert/notebook` (multipart file, optional mapping/catalogs, `download=true` returns the
 .ipynb) and `POST /convert/job` (job settings JSON → pipeline + schedule). Nothing is stored.
@@ -209,8 +227,11 @@ Inspection: `GET /migrations`, `/{id}`, `/{id}/items`, `/{id}/preflight`, `/{id}
 ## 6. Agent (Claude)
 
 ### 6.1 Loop
-A manual tool-use loop (`app/agents/runner.py`) on the Anthropic Messages API. Model `AI_MODEL`
-(default `claude-opus-5-5`), effort `AI_EFFORT`, server-side refusal fallback on by default. All
+A manual tool-use loop (`app/agents/runner.py`). Providers (`LLM_PROVIDER`): `anthropic`
+(Messages API, model `AI_MODEL` default `claude-opus-5-5`, effort `AI_EFFORT`, server-side refusal
+fallback) or `azure_openai` (chat completions with function tools on deployment `LLM_MODEL`,
+`max_completion_tokens`; the client translates the conversation, ADR 0006).
+`POST /connections/llm/test` checks the configured provider. All
 tool results of a turn go back in one message. Budget: `AGENT_MAX_TURNS`. Stops on `finish`,
 end of turn, refusal or budget. **Safety net:** if the agent stops before converting, or the
 Claude API fails, the deterministic stages complete the migration. The job's `agent` block
@@ -219,7 +240,8 @@ records why.
 ### 6.2 Tools
 `get_job_context, inventory_source, plan_migration, get_mapping, update_mapping, convert_assets,
 list_items, get_item, read_notebook, update_notebook_cell, run_preflight, deploy_to_fabric,
-record_result, finish`. Guards in code, not just in the prompt:
+copy_data_to_fabric, record_result, finish`. `copy_data_to_fabric` refuses unless copy_data was
+requested. Guards in code, not just in the prompt:
 - `deploy_to_fabric` refuses unless deploy was requested, Fabric credentials exist and preflight
   has no errors.
 - `record_result` cannot claim `migrated`.

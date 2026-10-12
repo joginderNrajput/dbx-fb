@@ -23,6 +23,8 @@ from app.databricks.discovery import DiscoveryOptions, discover
 from app.fabric.auth import FabricCredentials, acquire_token
 from app.fabric.client import Fabric
 from app.fabric.deploy import deploy
+from app.fabric.onelake import OneLake
+from app.migration.data_copy import copy_data
 from app.migration.engine import CellFixer, convert_all
 from app.migration.ledger import do_plan, load_ledger, record_result, resolve, summarize_ledger
 from app.migration.mapping import init_mapping, load_cfg, merge_mapping, validate_overrides
@@ -34,7 +36,7 @@ from app.sources.offline import build_offline_assessment
 __all__ = ["DEPLOY_KINDS", "MigrationSession", "SessionSpec"]
 
 DEPLOY_KINDS = ("notebook", "shortcuts", "pipeline")
-STAGES = ("inventory", "plan", "convert", "preflight", "deploy", "report")
+STAGES = ("inventory", "plan", "convert", "preflight", "deploy", "copy_data", "report")
 
 
 @dataclass
@@ -52,6 +54,10 @@ class SessionSpec:
     mapping_overrides: dict[str, Any] = field(default_factory=dict)
     fabric: FabricCredentials | None = None
     workspace_id: str | None = None
+    workspace_name: str | None = None
+    target_lakehouse: str | None = None  # every catalog lands in this lakehouse
+    copy_data: bool = False
+    warehouse_id: str | None = None
     deploy_requested: bool = False
     deploy_only: list[str] = field(default_factory=list)
     force_deploy: bool = False
@@ -124,6 +130,9 @@ class MigrationSession:
             "fabric_credentials": bool(s.fabric),
             "workspace_id": s.workspace_id or "",
             "deploy_requested": s.deploy_requested,
+            "copy_data_requested": s.copy_data,
+            "workspace_name": s.workspace_name or "",
+            "target_lakehouse": s.target_lakehouse or "",
             "deploy_only": s.deploy_only,
             "ai_fix": s.ai_fix,
             "uploaded_notebooks": len(s.uploaded_notebooks),
@@ -175,6 +184,10 @@ class MigrationSession:
         self.stage("plan")
         assess = self.assessment()
         cfg = init_mapping(assess)
+        if self.spec.target_lakehouse:
+            lh = self.spec.target_lakehouse
+            cfg["lakehouse_default"] = lh
+            cfg["catalog_to_lakehouse"] = {c: lh for c in cfg["catalog_to_lakehouse"]}
         cfg = merge_mapping(cfg, self.spec.uploaded_mapping)
         cfg = merge_mapping(cfg, self.spec.mapping_overrides)
         if self.spec.workspace_id and not cfg.get("workspace_id"):
@@ -233,17 +246,13 @@ class MigrationSession:
             raise ValidationFailed(
                 f"unknown deploy kinds {bad}; allowed: {list(DEPLOY_KINDS)}", field="only"
             )
-        with httpx.Client(
-            timeout=self.settings.FABRIC_TIMEOUT_S, transport=self._fabric_transport
-        ) as http:
-            token = acquire_token(self.spec.fabric, self.settings, http)
-        fab = Fabric(token, self.settings, transport=self._fabric_transport)
+        fab = self._fabric()
         try:
             ledger = deploy(
                 self.out,
                 self.cfg(),
                 fab,
-                self.spec.workspace_id,
+                self._workspace(fab),
                 only=kinds,
                 force=self.spec.force_deploy if force is None else force,
             )
@@ -253,6 +262,65 @@ class MigrationSession:
         self.deployed = True
         self._mark("deploy")
         return summarize_ledger(ledger)
+
+    def _token(self, scope: str | None = None) -> str:
+        if not self.spec.fabric:
+            raise ValidationFailed("Fabric credentials are required", field="target.credentials")
+        with httpx.Client(
+            timeout=self.settings.FABRIC_TIMEOUT_S, transport=self._fabric_transport
+        ) as http:
+            return acquire_token(self.spec.fabric, self.settings, http, scope=scope)
+
+    def _fabric(self) -> Fabric:
+        return Fabric(self._token(), self.settings, transport=self._fabric_transport)
+
+    def _workspace(self, fab: Fabric) -> str | None:
+        """Workspace id, resolving target.workspace_name once (then remembered for this job)."""
+        if not self.spec.workspace_id and self.spec.workspace_name:
+            self.spec.workspace_id = fab.find_workspace(self.spec.workspace_name)
+        return self.spec.workspace_id or self.cfg().get("workspace_id") or None
+
+    def copy_data(self) -> dict[str, Any]:
+        """Copy table data into the Fabric lakehouse(s) and validate row counts (spec §5.9)."""
+        self.stage("copy_data")
+        if "convert" not in self.done:
+            raise ValidationFailed("run convert before copy_data")
+        client = self.dbx()
+        if client is None:
+            raise ValidationFailed(
+                "copy_data needs Databricks credentials (the data is read through a SQL warehouse)",
+                field="source.credentials",
+            )
+        fab = self._fabric()
+        lake = OneLake(
+            self._token(self.settings.ONELAKE_SCOPE),
+            self.settings,
+            transport=self._fabric_transport,
+        )
+        try:
+            ws = self._workspace(fab)
+            if not ws:
+                raise ValidationFailed(
+                    "copy_data needs target.workspace_id or target.workspace_name",
+                    field="target.workspace_id",
+                )
+            summary = copy_data(
+                self.out,
+                self.cfg(),
+                client,
+                fab,
+                lake,
+                ws,
+                self.settings,
+                warehouse_id=self.spec.warehouse_id,
+                checkpoint=self.stage,
+            )
+        finally:
+            fab.close()
+            lake.close()
+        write_report(self.out)
+        self._mark("copy_data")
+        return summary
 
     def report(self) -> dict[str, Any]:
         self.stage("report")

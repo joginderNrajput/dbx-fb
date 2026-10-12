@@ -28,6 +28,7 @@ class DiscoveryOptions:
     include_jobs: bool = True
     include_tables: bool = True
     catalogs: list[str] = field(default_factory=list)  # empty = every non-system catalog
+    schemas: list[str] = field(default_factory=list)  # empty = every schema
     include_secret_scopes: bool = True
     include_clusters: bool = True
     max_notebooks: int = 5000
@@ -95,7 +96,9 @@ def _tables(
             warn(f"catalog {cat}: {e.message}")
             continue
         for s in schemas:
-            if s.get("name") == "information_schema":
+            if s.get("name") == "information_schema" or (
+                opts.schemas and s.get("name") not in opts.schemas
+            ):
                 continue
             try:
                 for t in c.iter_tables(cat, s["name"]):

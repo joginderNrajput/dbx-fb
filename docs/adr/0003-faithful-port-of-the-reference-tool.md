@@ -22,4 +22,8 @@ in `tests/unit/conversion/test_parity.py`. Deliberate deviations (the complete l
 7. Deploy errors are typed (`FabricError` with HTTP status), so "already exists" (409) is detected
    by status code instead of string matching.
 
+8. Additions that do not change generated artifacts: deploy warns when a target lakehouse is not
+   schema-enabled, and `options.copy_data` (spec §5.9) moves table data, which the reference
+   tool left to generated notebooks.
+
 Consequences: any behaviour change must update the parity test or this list.

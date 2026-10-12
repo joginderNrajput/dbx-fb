@@ -7,7 +7,7 @@ using it:
 - a live Databricks workspace
 - deploying to Fabric
 - agent mode
-- the automated test suite
+- the automated test suite, and the full code + data migration
 
 For the container flow see [`docker-testing-guide.md`](docker-testing-guide.md). Both flows
 read the same `.env` and write to the same `./output` folder.
@@ -301,10 +301,97 @@ curl -s -X POST $API/migrations/$ID/results -H 'content-type: application/json' 
 
 ---
 
-## 8. Scenario D — agent mode (Claude) and AI cell fixing
+## 8. Scenario D — migrate everything (code + data) to a named workspace and lakehouse
 
-Put `ANTHROPIC_API_KEY=sk-ant-...` in `.env` and restart `make dev`. `/readyz` then shows
-`"ai": "configured"`.
+This is the full migration: inventory, convert, deploy notebooks and pipelines, **copy every
+table's data**, validate row counts and create the views. It targets the Fabric workspace and
+lakehouse by name.
+
+Requirements beyond Scenario C:
+- a Databricks **SQL warehouse** the credentials can use (stopped warehouses auto-start);
+- a Fabric **service principal**: a bare `access_token` cannot write to OneLake;
+- a Fabric capacity that can run notebooks (the loader runs as a Fabric notebook job);
+- network access to `*.azuredatabricks.net`, `api.fabric.microsoft.com`,
+  `onelake.dfs.fabric.microsoft.com`, `login.microsoftonline.com` and, for
+  `DATA_COPY_DISPOSITION=EXTERNAL_LINKS`, `*.blob.core.windows.net`.
+
+```bash
+curl -s -X POST $API/migrations -H 'content-type: application/json' -d '{
+  "source": {
+    "type": "databricks",
+    "credentials": {"host": "https://adb-<id>.<n>.azuredatabricks.net", "token": "dapi..."},
+    "workspace_paths": ["/Workspace/Shared"],
+    "catalogs": ["altryxtodatabricks_accelarator_01"],
+    "schemas": ["flip_local_test"]
+  },
+  "target": {
+    "workspace_name": "Alteryx_Fabric",
+    "lakehouse": "Src_LK",
+    "credentials": {"tenant_id": "<tenant>", "client_id": "<app-id>", "client_secret": "<secret>"}
+  },
+  "options": {"deploy": true, "copy_data": true}
+}'
+wait_job $ID
+curl -s $API/migrations/$ID | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["status"], d["data_copy"], d["summary"]["migrated"], "migrated")'
+curl -s "$API/migrations/$ID/items?type=Table/View" | python3 -m json.tool   # validation per table
+```
+
+What you get in Fabric:
+- In lakehouse `Src_LK`, one Delta table per Databricks table, under the same schema name. If the
+  lakehouse has no schemas, the table is named `schema_table` and the item explains why.
+- The raw exports, under `Files/dbx_migration/...`.
+- Notebooks `load_migrated_data_Src_LK` and `create_views_Src_LK` (both already run), plus every
+  migrated notebook and pipeline.
+
+Tables whose row counts match the source are `migrated`, with the counts attached. Use a
+schema-enabled lakehouse if the migrated notebooks use `catalog.schema.table` names: they are
+rewritten to `Src_LK.schema.table`.
+
+**Development shortcut with `.env`.** With `ALLOW_ENV_CREDENTIALS=true` and the
+`DATABRICKS_*`, `FABRIC_*` (including `FABRIC_WORKSPACE_NAME`, `FABRIC_LAKEHOUSE`) and `LLM_*`
+values in `.env`, the request needs no credentials at all:
+
+```bash
+curl -s -X POST $API/migrations -H 'content-type: application/json' -d '{
+  "source": {"type": "databricks", "catalogs": ["altryxtodatabricks_accelarator_01"], "schemas": ["flip_local_test"]},
+  "options": {"deploy": true, "copy_data": true}}'
+```
+
+The live test suite runs the same flow from `.env`:
+
+```bash
+# .env: E2E_LIVE=1, E2E_DATABRICKS_CATALOG=..., E2E_DATABRICKS_SCHEMA=..., optional E2E_DATABRICKS_PATH / E2E_AGENT=1
+make test-e2e
+```
+
+Data copy on a migration that already finished:
+
+```bash
+curl -s -X POST $API/migrations/$ID/deploy -H 'content-type: application/json' -d '{
+  "target": {"workspace_name": "Alteryx_Fabric", "lakehouse": "Src_LK", "credentials": {"tenant_id": "...", "client_id": "...", "client_secret": "..."}},
+  "copy_data": true, "databricks": {"host": "https://adb-...", "token": "dapi..."}}'
+```
+
+---
+
+## 9. Scenario E — agent mode and AI cell fixing
+
+Pick a provider in `.env` and restart `make dev`.
+
+**Claude:** `LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=sk-ant-...`.
+
+**Azure OpenAI:**
+
+```bash
+LLM_PROVIDER=azure_openai
+LLM_BASE_URL=https://<resource>.openai.azure.com
+LLM_API_KEY=<key>
+LLM_MODEL=<deployment name, e.g. gpt-5.4-2>
+LLM_API_VERSION=2025-01-01-preview
+```
+
+Check it with `curl -s -X POST $API/connections/llm/test`, which returns `{"ok": true, ...}`.
+`/readyz` then shows `"ai": "configured"`.
 
 ```bash
 curl -s -X POST $API/migrations/upload \
@@ -330,7 +417,7 @@ markers (at most `AI_MAX_CELLS_PER_JOB` per job).
 
 ---
 
-## 9. Follow, cancel, clean up
+## 10. Follow, cancel, clean up
 
 ```bash
 curl -s $API/migrations | python3 -m json.tool          # newest first
@@ -343,17 +430,23 @@ Stop the server with Ctrl+C. Jobs still running at that moment are marked
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `401 unauthorized` | `AUTH_DISABLED=false` without a key: send `X-API-Key`, or set `AUTH_DISABLED=true` for local tests |
 | `422 … host resolves to a private or loopback address` | Databricks host must be public https; for local mocks set `ALLOW_PRIVATE_HOSTS=true` |
-| `503 ai_unavailable` | `mode=agent` / `ai_fix` without `ANTHROPIC_API_KEY`, or the `ai` extra not installed (`make install`) |
+| `503 ai_unavailable` | `mode=agent` / `ai_fix` without a configured LLM (`ANTHROPIC_API_KEY`, or the `LLM_*` Azure settings), or the `ai` extra not installed for Claude (`make install`) |
 | `413 payload_too_large` | raise `MAX_UPLOAD_MB` / `MAX_EXTRACTED_MB`, or upload a zip of only the notebooks |
 | `502 databricks_error … 403` | token lacks permissions or expired; test with `/connections/databricks/test` |
 | Notebook items `not_migrated: Source code not available` | upload that notebook, or provide Databricks credentials so it can be exported |
 | Job `failed: validation_failed … preflight found errors` | see `/preflight`; usually invalid lakehouse names or duplicate notebook base names |
 | Shortcut items stay `partial` | set `mapping.adls_connection_id` (Fabric ADLS Gen2 connection id) |
 | Managed tables `not_migrated … staging_storage` | set `mapping.staging_storage`, re-run, then run `export_to_staging.py` in Databricks |
+| `502 … failed -> 403 Forbidden` on every call, even with valid credentials | a corporate or sandbox egress proxy blocks the host (Databricks, Fabric, OneLake, Azure OpenAI): allow the domains listed in Scenario D |
+| `data_copy.failed > 0`, item `Data export failed … TABLE_OR_VIEW_NOT_FOUND` / permission | the credentials cannot SELECT that table on the SQL warehouse |
+| item `Data export failed … result download failed` | `*.blob.core.windows.net` unreachable: allow it, or set `DATA_COPY_DISPOSITION=INLINE` (≤ 25 MiB per table) |
+| `OneLake … 401/403` | use a service principal (not a bare Fabric access_token) that is a Contributor on the workspace |
+| item `Data load failed … loader notebook … Failed` | open `load_migrated_data_<lakehouse>` in Fabric and run it to see the Spark error; exported files stay in `Files/dbx_migration` |
+| `Fabric workspace '…' not found` | the service principal is not a member of the workspace, or the tenant setting "Service principals can use Fabric APIs" is off |
 | `Address already in use` on 8000 | another server (or `make up`) is running: `make down`, or `uv run uvicorn app.main:app --port 8001` |

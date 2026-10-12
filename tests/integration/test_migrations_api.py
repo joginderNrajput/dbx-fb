@@ -294,3 +294,89 @@ def test_connection_checks(client: TestClient) -> None:
             json={"credentials": {"host": HOST, "token": "bad"}},
         )
         assert r.status_code == 502 and r.json()["error"]["code"] == "databricks_error"
+
+
+def test_full_live_migration_with_data_copy_by_workspace_name(client: TestClient) -> None:
+    """Databricks discovery -> convert -> deploy to a workspace/lakehouse by NAME -> copy + validate data."""
+    from tests.unit.databricks.fake_sql import FakeSQL
+
+    cols = [("dt", "date"), ("amount", "double")]
+    with respx.mock(assert_all_called=False) as router:
+        mock_workspace(router)
+        router.get(f"{HOST}/api/2.0/workspace/export").mock(
+            side_effect=lambda req: httpx.Response(
+                200,
+                json={
+                    "content": base64.b64encode(
+                        (FIXTURES / "notebooks/etl/load_sales.py").read_bytes()
+                    ).decode()
+                },
+            )
+        )
+        fake = FakeFabric(router)
+        router.get("https://api.fabric.microsoft.com/v1/workspaces").mock(
+            return_value=httpx.Response(
+                200, json={"value": [{"id": "ws-1", "displayName": "Alteryx_Fabric"}]}
+            )
+        )
+        FakeSQL(
+            router,
+            HOST,
+            {
+                "main.gold.sales": (
+                    cols,
+                    [["2024-01-01", "1.5"], ["2024-01-02", "2.5"], ["2024-01-03", None]],
+                )
+            },
+        )
+        body = {
+            "source": {
+                "type": "databricks",
+                "credentials": {"host": HOST, "client_id": "sp", "client_secret": "sec"},
+                "include_secret_scopes": False,
+                "catalogs": ["main"],
+                "schemas": ["gold"],
+            },
+            "target": {
+                "workspace_name": "Alteryx_Fabric",
+                "lakehouse": "Src_LK",
+                "credentials": SP,
+            },
+            "options": {"deploy": True, "copy_data": True},
+        }
+        router.post(f"{HOST}/oidc/v1/token").mock(
+            return_value=httpx.Response(200, json={"access_token": "dbx-oauth"})
+        )
+        r = client.post("/api/v1/migrations", json=body)
+        assert r.status_code == 202, r.text
+        job = wait_for_job(client, r.json()["id"])
+    assert job["status"] == "succeeded", job
+    assert job["data_copy"]["copied"] == 1 and job["data_copy"]["failed"] == 0
+    assert (
+        job["options"]["workspace_name"] == "Alteryx_Fabric"
+        and job["options"]["lakehouse"] == "Src_LK"
+    )
+    assert fake.item("Lakehouse", "Src_LK") and not fake.item("Lakehouse", "lh_main")
+    nb = fake.notebook(fake.item("Notebook", "load_sales")["id"])  # type: ignore[index]
+    assert "Src_LK.gold.daily_sales" in json.dumps(nb)  # code points at the destination lakehouse
+    items = {
+        i["id"]: i for i in client.get(f"/api/v1/migrations/{job['id']}/items").json()["items"]
+    }
+    sales = items["Table/View:main.gold.sales"]
+    assert sales["outcome"] == "migrated" and sales["validation"]["rows_target"] == 3
+    assert "load_migrated_data_Src_LK" in fake.runs
+
+
+def test_copy_data_validation(client: TestClient) -> None:
+    r = client.post(
+        "/api/v1/migrations/upload",
+        files=upload_files(),
+        data=config(target={"workspace_name": "W", "credentials": SP}, options={"copy_data": True}),
+    )
+    assert r.status_code == 422 and r.json()["error"]["field"] == "config.databricks"
+    r = client.post(
+        "/api/v1/migrations/upload",
+        files=upload_files(),
+        data=config(options={"copy_data": True}, databricks={"host": HOST, "token": "dapi"}),
+    )
+    assert r.status_code == 422 and r.json()["error"]["field"] == "target.credentials"

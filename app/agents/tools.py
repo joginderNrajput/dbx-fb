@@ -105,6 +105,12 @@ TOOLS: list[dict[str, Any]] = [
         ),
     },
     {
+        "name": "copy_data_to_fabric",
+        "description": "Copy table data from Databricks into the Fabric lakehouse(s) and validate row counts, then create views. "
+        "Allowed only when copy_data was requested; run after convert_assets (and after deploy_to_fabric when deploying).",
+        "input_schema": _obj(),
+    },
+    {
         "name": "record_result",
         "description": "Record a decision about one item with a note. Outcomes: needs_testing, partial, not_migrated (migrated requires validation in Fabric).",
         "input_schema": _obj(
@@ -143,6 +149,12 @@ def _deploy(s: MigrationSession, inp: dict[str, Any]) -> Any:
     return s.deploy(only=inp.get("only"), force=False)
 
 
+def _copy(s: MigrationSession, inp: dict[str, Any]) -> Any:
+    if not s.spec.copy_data:
+        return {"refused": "copy_data was not requested for this migration"}
+    return s.copy_data()
+
+
 def _finish(_s: MigrationSession, inp: dict[str, Any]) -> Any:
     raise FinishSignal(str(inp.get("summary", "")))
 
@@ -164,6 +176,7 @@ HANDLERS: dict[str, Callable[[MigrationSession, dict[str, Any]], Any]] = {
     ),
     "run_preflight": lambda s, i: s.run_preflight(),
     "deploy_to_fabric": _deploy,
+    "copy_data_to_fabric": _copy,
     "record_result": lambda s, i: s.record(str(i["id"]), str(i["outcome"]), str(i["note"])),
     "finish": _finish,
 }

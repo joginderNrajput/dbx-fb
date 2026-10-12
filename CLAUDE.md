@@ -2,7 +2,7 @@
 
 An agentic FastAPI service that migrates Databricks workspaces, or offline notebooks when no
 Databricks credentials are shared, to Microsoft Fabric: inventory → plan → convert → preflight →
-[deploy] → report. A Claude agent can drive those stages (`mode=agent`). The specification is
+[deploy] → [copy data] → report. A Claude agent can drive those stages (`mode=agent`). The specification is
 `dbx2fabric-migration-service.md`. Conversion behaviour comes from the reference tool
 `dbx2fabric_migrate_v4.py` (kept verbatim; §1.2).
 
@@ -31,7 +31,7 @@ Databricks credentials are shared, to Microsoft Fabric: inventory → plan → c
 |---|---|---|
 | interface | `app/api`, `app/schemas`, `app/cli` | HTTP routes, wire contracts, operator CLI |
 | orchestration | `app/orchestrator` | job record/repo, in-process runner, MigrationService |
-| agent | `app/agents` | Claude client (only importer of `anthropic`), tools, loop, cell fixer |
+| agent | `app/agents` | LLM clients (Claude / Azure OpenAI; only `llm.py` talks to an LLM), tools, loop, cell fixer |
 | domain | `app/migration`, `app/conversion`, `app/sources`, `app/databricks`, `app/fabric` | engine, rules, offline ingest, integrations |
 | platform | `app/core`, `app/storage` | settings, errors, logging, metrics, security; job storage |
 
@@ -103,6 +103,11 @@ Development-only flags, refused when `APP_ENV=production`: `AUTH_DISABLED`,
   recovers from a tool error; an exception would end the job.
 - **`API_KEY_HASHES` goes in single quotes in `.env`.** Argon2 hashes contain `$`, which compose
   and dotenv expand otherwise.
+- **Data copy reads through a SQL warehouse and writes through OneLake.** A bare Fabric
+  `access_token` has the Fabric audience and cannot write OneLake; copy_data needs a service
+  principal. `EXTERNAL_LINKS` downloads also need `*.blob.core.windows.net` reachable.
+- **Scripted multi-line edits must assert their anchor.** After `ruff format` reflows a block, a
+  silent `str.replace` no-op once left a feature half-applied with green tests elsewhere.
 - **The Docker image has no apt layer.** `python:3.12-slim` ships CA certificates and every
   dependency has a wheel. If a new dependency needs a compiler, add `build-essential` to the
   builder stage only.

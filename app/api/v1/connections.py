@@ -49,8 +49,11 @@ async def test_fabric(
             token = acquire_token(creds, settings, http)
         fab = Fabric(token, settings)
         try:
-            if body.workspace_id:
-                ws = fab.get_workspace(body.workspace_id)
+            ws_id = body.workspace_id or (
+                fab.find_workspace(body.workspace_name) if body.workspace_name else None
+            )
+            if ws_id:
+                ws = fab.get_workspace(ws_id)
                 return {
                     "ok": True,
                     "workspace": {
@@ -62,5 +65,23 @@ async def test_fabric(
             return {"ok": True, "workspaces_visible": len(fab.list_workspaces())}
         finally:
             fab.close()
+
+    return await run_in_threadpool(check)
+
+
+@router.post("/llm/test")
+async def test_llm(settings: Annotated[Settings, Depends(get_settings_dep)]) -> dict[str, Any]:
+    """One tiny completion against the configured provider (Claude or Azure OpenAI)."""
+    from app.agents.llm import build_llm
+
+    def check() -> dict[str, Any]:
+        llm = build_llm(settings)
+        text = llm.complete("Reply with the single word: ready")
+        return {
+            "ok": bool(text.strip()),
+            "provider": settings.LLM_PROVIDER,
+            "model": settings.ai_model,
+            "reply": text.strip()[:50],
+        }
 
     return await run_in_threadpool(check)

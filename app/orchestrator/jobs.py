@@ -39,6 +39,7 @@ class JobRecord(BaseModel):
     preflight: dict[str, int] | None = None
     upload: dict[str, Any] | None = None
     agent: dict[str, Any] | None = None
+    data_copy: dict[str, Any] | None = None
     error: dict[str, str] | None = None
 
 

@@ -35,3 +35,4 @@ class DatabricksTestIn(StrictModel):
 class FabricTestIn(StrictModel):
     credentials: FabricCredentialsIn = FabricCredentialsIn()
     workspace_id: str | None = None
+    workspace_name: str | None = None

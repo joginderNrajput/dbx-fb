@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from typing import Any
@@ -10,6 +11,7 @@ import httpx
 import respx
 
 BASE = "https://api.fabric.microsoft.com/v1"
+ONELAKE = "https://onelake.dfs.fabric.microsoft.com"
 ENDPOINT_TYPES = {
     "lakehouses": "Lakehouse",
     "warehouses": "Warehouse",
@@ -54,6 +56,18 @@ class FakeFabric:
         router.get(url__regex=rf"{BASE}/operations/.+").mock(
             return_value=httpx.Response(200, json={"status": "Succeeded"})
         )
+        router.get(url__regex=rf"{BASE}/workspaces/{ws}/lakehouses/[^/]+$").mock(
+            side_effect=self._lakehouse
+        )
+        router.post(url__regex=rf"{BASE}/workspaces/{ws}/items/[^/]+/jobs/instances").mock(
+            side_effect=self._run_job
+        )
+        router.get(url__regex=rf"{BASE}/jobs/.+").mock(side_effect=self._job_status)
+        router.route(url__startswith=ONELAKE).mock(side_effect=self._onelake)
+        self.no_schema_lakehouses: set[str] = set()
+        self.files: dict[str, bytes] = {}
+        self.runs: list[str] = []
+        self.fail_runs: set[str] = set()
 
     def _create(self, request: httpx.Request) -> httpx.Response:
         endpoint = request.url.path.rsplit("/", 1)[-1]
@@ -91,3 +105,83 @@ class FakeFabric:
         return next(
             (i for i in self.items if i["type"] == type_ and i["displayName"] == name), None
         )
+
+    # ── lakehouse properties, notebook jobs, OneLake ──
+    def _lakehouse(self, request: httpx.Request) -> httpx.Response:
+        iid = request.url.path.rsplit("/", 1)[-1]
+        item = next((i for i in self.items if i["id"] == iid), None)
+        props = (
+            {}
+            if item and item["displayName"] in self.no_schema_lakehouses
+            else {"defaultSchema": "dbo"}
+        )
+        return httpx.Response(200, json={"id": iid, "properties": props})
+
+    def notebook(self, iid: str) -> dict[str, Any]:
+        d = self.definitions[iid]
+        return json.loads(base64.b64decode(d["parts"][0]["payload"]))
+
+    def _run_job(self, request: httpx.Request) -> httpx.Response:
+        iid = request.url.path.split("/")[-3]
+        name = next(i["displayName"] for i in self.items if i["id"] == iid)
+        self.runs.append(name)
+        status = "Failed" if name in self.fail_runs else "Completed"
+        if name.startswith("load_migrated_data_") and status == "Completed":
+            self._simulate_loader(iid)
+        return httpx.Response(202, headers={"Location": f"{BASE}/jobs/{status}/{iid}"})
+
+    def _job_status(self, request: httpx.Request) -> httpx.Response:
+        status = request.url.path.split("/")[-2]
+        return httpx.Response(
+            200,
+            json={
+                "status": status,
+                "failureReason": None if status == "Completed" else {"message": "boom"},
+            },
+        )
+
+    def _simulate_loader(self, iid: str) -> None:
+        """What the generated loader notebook does in Fabric: count rows per exported table."""
+        nb = self.notebook(iid)
+        lh_id = nb["metadata"]["dependencies"]["lakehouse"]["default_lakehouse"]
+        scope: dict[str, Any] = {}
+        for c in nb["cells"]:
+            src = "".join(c["source"])
+            if src.startswith(("RESULTS_PATH", "MANIFEST")):
+                exec(src, scope)  # parameters + manifest cells are plain assignments
+        results = []
+        for t in scope["MANIFEST"]:
+            prefix = f"{self.ws}/{lh_id}/{t['path']}/"
+            rows = sum(len(v.splitlines()) for k, v in self.files.items() if k.startswith(prefix))
+            ok = rows == t["rows"]
+            results.append(
+                {
+                    "id": t["id"],
+                    "status": "PASS" if ok else "FAIL",
+                    "target": t["target"],
+                    "rows_source": t["rows"],
+                    "rows_target": rows,
+                    "note": "" if ok else f"rows {t['rows']} != {rows}",
+                }
+            )
+        self.files[f"{self.ws}/{lh_id}/{scope['RESULTS_PATH']}"] = json.dumps(results).encode()
+
+    def _onelake(self, request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer fab-token"
+        path = request.url.path.lstrip("/")
+        q = dict(request.url.params)
+        if request.method == "PUT":
+            self.files[path] = b""
+            return httpx.Response(201)
+        if request.method == "PATCH" and q.get("action") == "append":
+            self.files[path] = self.files.get(path, b"") + request.content
+            return httpx.Response(202)
+        if request.method == "PATCH":
+            return httpx.Response(200)
+        if request.method == "DELETE":
+            for k in [k for k in self.files if k == path or k.startswith(path + "/")]:
+                del self.files[k]
+            return httpx.Response(200)
+        if path in self.files:
+            return httpx.Response(200, content=self.files[path])
+        return httpx.Response(404)

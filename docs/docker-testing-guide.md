@@ -34,7 +34,7 @@ defaults, which means **auth enabled**, so `/api/v1` answers 401. For local test
 | Setting | Notes for Docker |
 |---|---|
 | `OUTPUT_DIR` | ignored: compose pins it to `/app/output`, mounted from `./output` on the host |
-| `ANTHROPIC_API_KEY` | set it to try agent mode; the image includes the `ai` extra by default |
+| `ANTHROPIC_API_KEY` / `LLM_*` | set one provider to try agent mode (Claude needs the `ai` extra, included by default; Azure OpenAI needs nothing extra) |
 | `FABRIC_ALLOW_AZ_CLI` | not usable in the container (no `az` CLI inside); use a service principal or token |
 | `API_PORT` | host port, default 8000 |
 | `DOCKER_EXTRAS` | `ai` (default) or empty to build without the Anthropic SDK |
@@ -74,7 +74,7 @@ it would ship, use plain `docker run` (section 6).
 ## 4. Test scenarios
 
 The API is the same as in the host flow, so every scenario in
-[`local-testing-guide.md` §5–§9](local-testing-guide.md#5-scenario-a--offline-notebooks-no-databricks-credentials)
+[`local-testing-guide.md` §5–§10](local-testing-guide.md#5-scenario-a--offline-notebooks-no-databricks-credentials)
 works unchanged against `http://localhost:8000`. The essentials:
 
 ```bash
@@ -113,7 +113,21 @@ curl -s -X POST $API/migrations/$ID/deploy -H 'content-type: application/json' -
   "only": ["notebook"]}'
 ```
 
-**Agent mode:** set `ANTHROPIC_API_KEY` in `.env`, recreate the container
+**Migrate everything (code + data)** to a workspace and lakehouse by name. Details,
+requirements and the domains that must be reachable are in local-testing-guide §8:
+
+```bash
+curl -s -X POST $API/migrations -H 'content-type: application/json' -d '{
+  "source": {"type": "databricks", "catalogs": ["<catalog>"], "schemas": ["<schema>"],
+             "credentials": {"host": "https://adb-...azuredatabricks.net", "token": "dapi..."}},
+  "target": {"workspace_name": "Alteryx_Fabric", "lakehouse": "Src_LK",
+             "credentials": {"tenant_id": "<tenant>", "client_id": "<app-id>", "client_secret": "<secret>"}},
+  "options": {"deploy": true, "copy_data": true}}'
+```
+
+**Agent mode:** configure an LLM in `.env` (`ANTHROPIC_API_KEY`, or `LLM_PROVIDER=azure_openai` with
+`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`), check it with
+`curl -s -X POST $API/connections/llm/test`, recreate the container
 (`docker compose up -d --force-recreate`), then:
 
 ```bash
@@ -185,5 +199,6 @@ and smoke-tests `/healthz` in a container.
 | Build fails at `uv sync --frozen` | `uv.lock` is out of date with `pyproject.toml`: run `uv lock` on the host and commit it |
 | Build fails with `CERTIFICATE_VERIFY_FAILED` behind a corporate TLS proxy | the build cannot reach PyPI through your proxy: build where PyPI is reachable, or add your proxy CA to the **builder** stage only (`COPY ca.crt` + `PIP_CERT` / `SSL_CERT_FILE`) |
 | `Bind for 0.0.0.0:8000 failed` | port taken (perhaps `make dev`): stop it, or `API_PORT=8001 make up` |
-| Agent mode returns 503 | `ANTHROPIC_API_KEY` missing in `.env`, or image built with `DOCKER_EXTRAS=""` |
+| Agent mode returns 503 | no LLM configured in `.env`, or Claude selected with an image built with `DOCKER_EXTRAS=""` |
+| Every Databricks / Fabric call fails with `403 Forbidden` | an egress proxy or firewall blocks the host from the container: allow `*.azuredatabricks.net`, `api.fabric.microsoft.com`, `onelake.dfs.fabric.microsoft.com`, `login.microsoftonline.com`, `*.blob.core.windows.net` (and your Azure OpenAI host) |
 | Reload loops while jobs run | must not happen: `--reload-dir /app/app` watches code only; check you did not change the compose command |

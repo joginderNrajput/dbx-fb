@@ -39,13 +39,24 @@ class DatabricksSourceIn(StrictModel):
     catalogs: list[str] = Field(
         default_factory=list, description="Unity Catalog catalogs (empty = all non-system)"
     )
+    schemas: list[str] = Field(default_factory=list, description="Only these schemas (empty = all)")
+    warehouse_id: str | None = Field(
+        None, description="SQL warehouse for options.copy_data (default: first available)"
+    )
     include_secret_scopes: bool = True
     include_clusters: bool = True
     max_notebooks: int | None = Field(None, ge=1)
 
 
 class FabricTargetIn(StrictModel):
-    workspace_id: str | None = Field(None, description="Fabric workspace GUID (needed to deploy)")
+    workspace_id: str | None = Field(None, description="Fabric workspace GUID")
+    workspace_name: str | None = Field(
+        None, description="Fabric workspace display name (alternative to workspace_id)"
+    )
+    lakehouse: str | None = Field(
+        None,
+        description="Destination lakehouse for all migrated data (existing or created); default: one per catalog",
+    )
     credentials: FabricCredentialsIn | None = None
 
 
@@ -60,7 +71,12 @@ class MigrationOptionsIn(StrictModel):
     deploy_only: list[DeployKind] = Field(default_factory=list)
     force_deploy: bool = Field(False, description="Deploy even if preflight reports errors")
     ai_fix: bool = Field(
-        False, description="Let Claude rewrite cells that still carry TODO markers"
+        False, description="Let the LLM rewrite cells that still carry TODO markers"
+    )
+    copy_data: bool = Field(
+        False,
+        description="Copy table data Databricks -> Fabric (SQL warehouse export -> OneLake -> loader notebook run); "
+        "needs Databricks and Fabric credentials",
     )
     agent_instructions: str | None = Field(None, max_length=4000)
 
@@ -94,6 +110,11 @@ class DeployIn(StrictModel):
     target: FabricTargetIn
     only: list[DeployKind] = Field(default_factory=list)
     force: bool = False
+    copy_data: bool = Field(
+        False, description="Also copy table data (needs databricks credentials)"
+    )
+    databricks: DatabricksCredentialsIn | None = None
+    warehouse_id: str | None = None
 
 
 class ItemResultIn(StrictModel):
@@ -123,6 +144,7 @@ class MigrationOut(BaseModel):
     preflight: dict[str, int] | None = None
     upload: dict[str, Any] | None = None
     agent: dict[str, Any] | None = None
+    data_copy: dict[str, Any] | None = None
     error: JobError | None = None
     links: dict[str, str] = Field(default_factory=dict)
 

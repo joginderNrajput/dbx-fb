@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # ── databricks (spec §5.1) ─────────────────────────────────
     DATABRICKS_TIMEOUT_S: PositiveInt = 90
     DATABRICKS_MAX_RETRIES: int = 3
+    # Data copy (options.copy_data, spec §5.9): tables above DATA_COPY_MAX_ROWS are skipped (use
+    # export_to_staging). EXTERNAL_LINKS downloads chunks from presigned cloud-storage URLs
+    # (*.blob.core.windows.net / *.dfs.core.windows.net must be reachable); INLINE stays on the
+    # workspace host but Databricks caps an inline result at 25 MiB.
+    DATA_COPY_MAX_ROWS: PositiveInt = 10_000_000
+    DATA_COPY_DISPOSITION: Literal["EXTERNAL_LINKS", "INLINE"] = "EXTERNAL_LINKS"
+    DATA_COPY_STATEMENT_TIMEOUT_S: PositiveInt = 1800
+    DATA_COPY_POLL_S: PositiveFloat = 2.0
+    DATA_COPY_FOLDER: str = "dbx_migration"
     # Upper bound on notebooks discovered per migration (protects the job budget).
     DATABRICKS_MAX_NOTEBOOKS: PositiveInt = 5000
 
@@ -62,6 +71,12 @@ class Settings(BaseSettings):
     FABRIC_LRO_POLL_S: PositiveFloat = 2.0
     FABRIC_LRO_MAX_POLLS: PositiveInt = 150
     FABRIC_MAX_THROTTLE_RETRIES: PositiveInt = 4
+    # OneLake (ADLS Gen2 DFS API) for options.copy_data; tokens use the Azure Storage audience.
+    ONELAKE_DFS_BASE: str = "https://onelake.dfs.fabric.microsoft.com"
+    ONELAKE_SCOPE: str = "https://storage.azure.com/.default"
+    # Fabric job polling (loader / view notebooks run on demand).
+    FABRIC_JOB_POLL_S: PositiveFloat = 10.0
+    FABRIC_JOB_TIMEOUT_S: PositiveInt = 3600
     # Dev-only: when a request carries no Fabric credentials, take a token from `az login`.
     FABRIC_ALLOW_AZ_CLI: bool = False
 
@@ -71,17 +86,23 @@ class Settings(BaseSettings):
     ALLOW_ENV_CREDENTIALS: bool = False
     DATABRICKS_HOST: str = ""
     DATABRICKS_TOKEN: SecretStr | None = None
+    DATABRICKS_CLIENT_ID: str = ""
+    DATABRICKS_CLIENT_SECRET: SecretStr | None = None
     FABRIC_TOKEN: SecretStr | None = None
     FABRIC_TENANT_ID: str = ""
     FABRIC_CLIENT_ID: str = ""
     FABRIC_CLIENT_SECRET: SecretStr | None = None
     FABRIC_WORKSPACE_ID: str = ""
+    FABRIC_WORKSPACE_NAME: str = ""
+    FABRIC_LAKEHOUSE: str = ""
     # Dev-only: allow http:// and private/loopback Databricks hosts (local mocks). Without it the
     # host must be https and public, which stops the API being used to probe the internal network.
     ALLOW_PRIVATE_HOSTS: bool = False
 
     # ── ai / agent (spec §6) ───────────────────────────────────
-    # Needed for mode=agent and options.ai_fix; requires the `ai` extra.
+    # Needed for mode=agent and options.ai_fix. "anthropic" uses the Claude API (`ai` extra);
+    # "azure_openai" uses an Azure OpenAI chat-completions deployment over httpx (no extra).
+    LLM_PROVIDER: Literal["anthropic", "azure_openai"] = "anthropic"
     ANTHROPIC_API_KEY: SecretStr | None = None
     AI_MODEL: str = "claude-opus-5-5"
     # Effort for every Claude call; empty string omits the parameter (for models without it).
@@ -91,6 +112,15 @@ class Settings(BaseSettings):
     AI_MAX_RETRIES: int = 2
     # Server-side refusal fallback (Claude API only). Turn off for Bedrock/Vertex/Foundry gateways.
     AI_REFUSAL_FALLBACK: bool = True
+    # Azure OpenAI (LLM_PROVIDER=azure_openai): resource endpoint, key, DEPLOYMENT name (Azure
+    # addresses a deployment, not a model family) and API version. AI_MAX_TOKENS is sent as
+    # max_completion_tokens; AI_EFFORT is sent as reasoning_effort when set (Beyond §6).
+    LLM_BASE_URL: str = ""
+    LLM_API_KEY: SecretStr | None = None
+    LLM_MODEL: str = ""
+    LLM_API_VERSION: str = "2025-01-01-preview"
+    # Send AI_EFFORT as reasoning_effort to Azure OpenAI (reasoning deployments accept low|medium|high).
+    LLM_SEND_REASONING_EFFORT: bool = False
     # Budgets: agent turns per job, and cells the AI fixer may rewrite per job.
     AGENT_MAX_TURNS: PositiveInt = 40
     AI_MAX_CELLS_PER_JOB: PositiveInt = 200
@@ -122,9 +152,16 @@ class Settings(BaseSettings):
 
     @property
     def ai_configured(self) -> bool:
+        if self.LLM_PROVIDER == "azure_openai":
+            key = self.LLM_API_KEY.get_secret_value() if self.LLM_API_KEY else ""
+            return bool(key and self.LLM_BASE_URL and self.LLM_MODEL)
         return self.ANTHROPIC_API_KEY is not None and bool(
             self.ANTHROPIC_API_KEY.get_secret_value()
         )
+
+    @property
+    def ai_model(self) -> str:
+        return self.LLM_MODEL if self.LLM_PROVIDER == "azure_openai" else self.AI_MODEL
 
 
 @lru_cache
