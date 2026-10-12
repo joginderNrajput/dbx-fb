@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     DATA_COPY_STATEMENT_TIMEOUT_S: PositiveInt = 1800
     DATA_COPY_POLL_S: PositiveFloat = 2.0
     DATA_COPY_FOLDER: str = "dbx_migration"
+    # Files copy (options.copy_data): Unity Catalog volumes Fabric cannot shortcut and workspace
+    # files go to lakehouse Files/ through the Databricks Files API. Bounded per migration.
+    FILE_COPY_MAX_FILES: PositiveInt = 10_000
+    FILE_COPY_MAX_FILE_MB: PositiveInt = 512
+    FILE_COPY_MAX_TOTAL_MB: PositiveInt = 20_480
     # Upper bound on notebooks discovered per migration (protects the job budget).
     DATABRICKS_MAX_NOTEBOOKS: PositiveInt = 5000
 

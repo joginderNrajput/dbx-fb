@@ -257,6 +257,24 @@ def mock_extra_objects(router: respx.MockRouter) -> None:
             ]
         )
     )
+    vol = "/Volumes/main/gold/raw"
+    tree = {
+        vol: [
+            {"path": f"{vol}/a.csv", "is_directory": False, "file_size": 3},
+            {"path": f"{vol}/sub/", "is_directory": True},
+        ],
+        f"{vol}/sub": [{"path": f"{vol}/sub/b.bin", "is_directory": False, "file_size": 2}],
+    }
+    router.get(url__startswith=f"{HOST}/api/2.0/fs/directories").mock(
+        side_effect=lambda r: ok(
+            contents=tree.get(r.url.path.removeprefix("/api/2.0/fs/directories"), [])
+        )
+    )
+    router.get(url__startswith=f"{HOST}/api/2.0/fs/files").mock(
+        side_effect=lambda r: httpx.Response(
+            200, content=b"abc" if r.url.path.endswith(".csv") else b"\x00\x01"
+        )
+    )
     router.get(f"{HOST}/api/2.0/libraries/cluster-status").mock(
         return_value=ok(
             library_statuses=[{"library": {"pypi": {"package": "great-expectations==1.0"}}}]

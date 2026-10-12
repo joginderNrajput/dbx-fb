@@ -15,6 +15,9 @@ from app.core.exceptions import FabricError
 __all__ = ["OneLake"]
 
 
+APPEND_BYTES = 8 * 1024 * 1024
+
+
 class OneLake:
     def __init__(
         self, token: str, settings: Settings, transport: httpx.BaseTransport | None = None
@@ -55,10 +58,12 @@ class OneLake:
                 self.http.put(url, params={"resource": "file"}, headers={"Content-Length": "0"}),
                 f"create {path}",
             )
-            if data:
+            for pos in range(0, len(data), APPEND_BYTES):  # bounded appends for large files
                 self._check(
                     self.http.patch(
-                        url, params={"action": "append", "position": "0"}, content=data
+                        url,
+                        params={"action": "append", "position": str(pos)},
+                        content=data[pos : pos + APPEND_BYTES],
                     ),
                     f"append {path}",
                 )

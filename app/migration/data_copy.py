@@ -29,7 +29,14 @@ from app.fabric.deploy import deploy_notebook
 from app.fabric.onelake import OneLake
 from app.migration.ledger import resolve
 
-__all__ = ["COPYABLE_TYPES", "LOADER_CODE", "copy_data", "pick_warehouse", "rows_to_jsonl"]
+__all__ = [
+    "COPYABLE_TYPES",
+    "LOADER_CODE",
+    "copy_data",
+    "copy_files",
+    "pick_warehouse",
+    "rows_to_jsonl",
+]
 
 log = get_logger(__name__)
 COPYABLE_TYPES = ("MANAGED", "EXTERNAL", "MATERIALIZED_VIEW", "STREAMING_TABLE")
@@ -116,6 +123,138 @@ def _complete(it: dict[str, Any], r: dict[str, Any]) -> None:
         it["reasons"].append(f"Data copy {r.get('status')}: {r.get('note')}")
 
 
+def _clean(path: str) -> str:
+    """A OneLake-relative path from a source path: no empty, '.' or '..' segments."""
+    return "/".join(p for p in path.split("/") if p not in ("", ".", ".."))
+
+
+class _Budget:
+    def __init__(self, settings: Settings) -> None:
+        self.files_left = settings.FILE_COPY_MAX_FILES
+        self.bytes_left = settings.FILE_COPY_MAX_TOTAL_MB * 1024 * 1024
+        self.max_file = settings.FILE_COPY_MAX_FILE_MB * 1024 * 1024
+
+    def take(self, size: int) -> str:
+        """'' when the file fits, else why it is skipped."""
+        if size > self.max_file:
+            return f"larger than FILE_COPY_MAX_FILE_MB ({size // 1048576} MB)"
+        if self.files_left <= 0 or size > self.bytes_left:
+            return "file copy budget exhausted (FILE_COPY_MAX_FILES / FILE_COPY_MAX_TOTAL_MB)"
+        self.files_left -= 1
+        self.bytes_left -= size
+        return ""
+
+
+def copy_files(
+    out: Path,
+    cfg: dict[str, Any],
+    dbx: DatabricksClient,
+    fab: Fabric,
+    lake: OneLake,
+    ws: str,
+    settings: Settings,
+    *,
+    checkpoint: Callable[[str], None],
+    lakehouse_id: Callable[[str], str],
+) -> dict[str, Any]:
+    """UC volumes no shortcut serves, and workspace files, -> lakehouse ``Files/`` (spec §5.9).
+
+    A volume goes to ``Files/<schema>_<volume>/`` (the name its shortcut would have had), a
+    workspace file to ``Files/workspace_files/<path>``. Reads use the Databricks Files API /
+    workspace export; writes use OneLake. Per-item results land on the ledger.
+    """
+    ledger = load_json(out / "ledger.json")
+    budget = _Budget(settings)
+    summary: dict[str, Any] = {
+        "volumes": 0,
+        "workspace_files": 0,
+        "files": 0,
+        "bytes": 0,
+        "failed": 0,
+    }
+    for it in ledger["items"]:
+        if it["type"] == "Volume":
+            if cfg["adls_connection_id"] and "Files shortcut" in it.get("actions", []):
+                continue  # a OneLake shortcut serves it in place
+            checkpoint("copy_files")
+            cat, sch, vol = (it["name"].split(".") + ["", "", ""])[:3]
+            if not (cat and sch and vol):
+                continue
+            lh = cfg["catalog_to_lakehouse"].get(cat, cfg["lakehouse_default"])
+            src_root = f"/Volumes/{cat}/{sch}/{vol}"
+            dest_root = f"Files/{_clean(f'{sch}_{vol}')}"
+            n = size = 0
+            skipped: list[str] = []
+            try:
+                lid = lakehouse_id(lh)
+                stack = [src_root]
+                while stack:
+                    d = stack.pop()
+                    for e in dbx.list_directory(d):
+                        path = str(e.get("path") or "")
+                        if not path.startswith(src_root + "/"):
+                            continue
+                        if e.get("is_directory"):
+                            stack.append(path.rstrip("/"))
+                            continue
+                        why = budget.take(int(e.get("file_size") or 0))
+                        if why:
+                            skipped.append(f"{path}: {why}")
+                            continue
+                        data = dbx.download_file(path)
+                        lake.upload(ws, lid, f"{dest_root}/{_clean(path[len(src_root) :])}", data)
+                        n, size = n + 1, size + len(data)
+            except (DatabricksError, FabricError) as e:
+                it["reasons"].append(f"Volume file copy failed after {n} file(s): {e.message}")
+                it["outcome"] = PART if n else it["outcome"]
+                summary["failed"] += 1
+                continue
+            finally:
+                summary["files"] += n
+                summary["bytes"] += size
+            summary["volumes"] += 1
+            it["actions"].append(
+                f"Copied {n} file(s) ({size / 1048576:.1f} MB) from {src_root} to lakehouse {lh} {dest_root}"
+            )
+            it["reasons"] = [
+                r
+                for r in it["reasons"]
+                if "copy files into OneLake" not in r and "staging_storage" not in r
+            ] + [f"Not copied - {x}" for x in skipped[:20]]
+            it["outcome"] = PART if skipped else TEST
+            it["deployment"] = "deployed"
+            it["target_id"] = lid
+            it["tests"].append(f"Compare the file list of {dest_root} with {src_root}")
+        elif it["type"] == "Workspace File":
+            checkpoint("copy_files")
+            lh = cfg["lakehouse_default"]
+            dest = f"Files/workspace_files/{_clean(it['name'])}"
+            try:
+                data = dbx.export_file(it["name"])
+                why = budget.take(len(data))
+                if why:
+                    it["reasons"].append(f"Not copied - {why}")
+                    continue
+                lid = lakehouse_id(lh)
+                lake.upload(ws, lid, dest, data)
+            except (DatabricksError, FabricError) as e:
+                it["reasons"].append(f"Workspace file copy failed: {e.message}")
+                summary["failed"] += 1
+                continue
+            summary["workspace_files"] += 1
+            summary["files"] += 1
+            summary["bytes"] += len(data)
+            it["actions"].append(f"Copied to lakehouse {lh} {dest}")
+            it["outcome"], it["deployment"], it["target_id"] = TEST, "deployed", lid
+            it["tests"].append(
+                "Update notebook references to the file (/Workspace/... -> /lakehouse/default/"
+                + dest
+                + ")"
+            )
+    save_json(out / "ledger.json", ledger)
+    return summary
+
+
 def copy_data(
     out: Path,
     cfg: dict[str, Any],
@@ -128,6 +267,20 @@ def copy_data(
     warehouse_id: str | None,
     checkpoint: Callable[[str], None],
 ) -> dict[str, Any]:
+    lh_ids: dict[str, str] = {}
+    lh_schemas: dict[str, bool] = {}
+
+    def lakehouse_id(lh: str) -> str:
+        if lh not in lh_ids:
+            lh_ids[lh], _ = fab.ensure(
+                ws, "lakehouses", "Lakehouse", lh, {"creationPayload": {"enableSchemas": True}}
+            )
+            lh_schemas[lh] = fab.lakehouse_has_schemas(ws, lh_ids[lh])
+        return lh_ids[lh]
+
+    files = copy_files(
+        out, cfg, dbx, fab, lake, ws, settings, checkpoint=checkpoint, lakehouse_id=lakehouse_id
+    )
     ledger = load_json(out / "ledger.json")
     assess = load_json(out / "assessment.json")
     metas = {f"{a['type']}:{a['name']}": a.get("meta", {}) for a in assess["assets"]}
@@ -148,25 +301,22 @@ def copy_data(
         "failed": 0,
         "skipped": 0,
         "views_created": [],
+        "files": files,
     }
     if not todo:
+        ledger["data_copy"] = summary
+        save_json(out / "ledger.json", ledger)
         return summary
     wh = pick_warehouse(dbx, warehouse_id)
     summary["warehouse_id"] = wh
     folder = settings.DATA_COPY_FOLDER.strip("/")
     run_id = datetime.now().strftime("%Y%m%d%H%M%S")
-    lh_ids: dict[str, str] = {}
-    lh_schemas: dict[str, bool] = {}
     manifests: dict[str, list[dict[str, Any]]] = {}
     for it in todo:
         checkpoint("copy_data")
         cat, sch, tbl = (it["name"].split(".") + ["", "", ""])[:3]
         lh = cfg["catalog_to_lakehouse"].get(cat, cfg["lakehouse_default"])
-        if lh not in lh_ids:
-            lh_ids[lh], _ = fab.ensure(
-                ws, "lakehouses", "Lakehouse", lh, {"creationPayload": {"enableSchemas": True}}
-            )
-            lh_schemas[lh] = fab.lakehouse_has_schemas(ws, lh_ids[lh])
+        lakehouse_id(lh)
         try:
             cnt = dbx.execute_statement(
                 wh,

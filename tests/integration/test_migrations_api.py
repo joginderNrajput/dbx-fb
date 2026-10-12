@@ -370,6 +370,12 @@ def test_full_live_migration_with_data_copy_by_workspace_name(client: TestClient
     sales = items["Table/View:main.gold.sales"]
     assert sales["outcome"] == "migrated" and sales["validation"]["rows_target"] == 3
     assert "load_migrated_data_Src_LK" in fake.runs
+    # the external volume has no ADLS connection to shortcut through: its files are copied
+    copied = {k.split("/Files/", 1)[1]: v for k, v in fake.files.items() if "/Files/gold_raw/" in k}
+    assert copied == {"gold_raw/a.csv": b"abc", "gold_raw/sub/b.bin": b"\x00\x01"}
+    vol = items["Volume:main.gold.raw"]
+    assert vol["outcome"] == "needs_testing" and vol["deployment"] == "deployed"
+    assert job["data_copy"]["files"]["volumes"] == 1 and job["data_copy"]["files"]["files"] == 2
 
 
 def test_copy_data_validation(client: TestClient) -> None:

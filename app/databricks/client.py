@@ -168,6 +168,11 @@ class DatabricksClient:
             return None
         return base64.b64decode(r["content"]).decode("utf-8", "ignore")
 
+    def export_file(self, path: str) -> bytes:
+        """Raw bytes of a workspace file (non-notebook)."""
+        r = self.get("/api/2.0/workspace/export", path=path, format="AUTO")
+        return base64.b64decode(r.get("content") or "")
+
     # ── jobs ──
     def iter_jobs(self) -> Iterator[dict[str, Any]]:
         token: str | None = None
