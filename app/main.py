@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.llm import LLMClient, build_llm
+from app.api import ui
 from app.api.errors import install_error_handlers
 from app.api.middleware import BodySizeLimitMiddleware, RequestContextMiddleware
 from app.api.v1 import health
@@ -70,6 +71,7 @@ def create_app(
     install_error_handlers(app)
     app.include_router(health.router)
     app.include_router(api_router)
+    app.include_router(ui.router)
     return app
 
 

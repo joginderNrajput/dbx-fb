@@ -62,7 +62,7 @@ curl -s localhost:9093/readyz            # storage ok; AI configured or not
 make logs                                # = docker compose logs -f
 ```
 
-Swagger UI: <http://localhost:9093/docs>.
+Migration form: <http://localhost:9093/ui> · Swagger UI: <http://localhost:9093/docs>.
 
 The default compose service mounts `./app` read-only and runs uvicorn with `--reload`, so code
 edits on the host restart the server inside the container. To run the immutable image exactly as

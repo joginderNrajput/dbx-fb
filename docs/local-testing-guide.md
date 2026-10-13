@@ -103,6 +103,7 @@ curl -s localhost:9093/healthz          # {"status":"ok"}
 curl -s localhost:9093/readyz           # storage ok; reports whether AI is configured
 ```
 
+Migration form (connect → select → target → migrate, no curl needed): <http://localhost:9093/ui>.
 Interactive API docs (try every endpoint from the browser): <http://localhost:9093/docs>.
 Every endpoint as a copy-paste curl command, importable into Postman: [`api-curl-reference.md`](api-curl-reference.md).
 

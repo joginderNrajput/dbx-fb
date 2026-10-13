@@ -24,6 +24,10 @@ make up
 curl -F "files=@my_notebook.ipynb" -F 'config={}' http://localhost:9093/api/v1/migrations/upload
 ```
 
+**Prefer a browser?** Open <http://localhost:9093/ui>: a step-by-step form that tests the Databricks and
+Fabric credentials (both required), loads every Databricks object list, lets you tick what to migrate,
+pick the Fabric workspace and lakehouse, and then runs and follows the migration.
+
 Then follow the job at `GET /api/v1/migrations/{id}`. When it finishes, open `/report` or
 download everything from `/download`.
 

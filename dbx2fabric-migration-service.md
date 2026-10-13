@@ -243,6 +243,16 @@ objects, each by a direct lookup (`workspace/get-status`, `jobs/get`, `clusters/
 selects every notebook under it. Objects that cannot be read become inventory warnings, not
 errors. Notebook source is still exported per selected notebook at convert time.
 
+### 5.11 Migration form — `GET /ui`
+A static page (`app/static/migrate.html`, no build step, no external scripts) served by the app; `/`
+redirects to it. It needs no auth itself: the user types the API key and the Databricks / Fabric
+credentials, which are sent only in request bodies and never saved (only non-secret fields such as
+the host and tenant are remembered in the browser). Steps: (1) Databricks and Fabric credentials are
+mandatory and both connection tests must pass; (2) every browse list (§5.10) is loaded, the user ticks
+objects (whole schemas allowed) and is warned when selected jobs run notebooks that are not selected;
+(3) Fabric workspace, destination lakehouse (existing or new) and options; (4) review of the masked
+request; (5) `POST /migrations`, status polling, item outcomes and report/zip downloads.
+
 ### 5.9 Data copy — `options.copy_data` (or `copy_data` on `POST /{id}/deploy`)
 For every table (MANAGED / EXTERNAL / MATERIALIZED_VIEW / STREAMING_TABLE; views are recreated,
 shortcut-served tables skipped):

@@ -1,0 +1,987 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Databricks to Fabric Migration</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%230f6cbd%22/%3E%3Cpath d=%22M4 8h6M8 5l3 3-3 3%22 stroke=%22white%22 stroke-width=%221.6%22 fill=%22none%22/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --border: #dde1e7; --text: #1b1f24;
+  --muted: #5d6673; --accent: #0f6cbd; --accent-2: #e8f1fb; --ok: #107c41; --ok-bg: #e6f4ec;
+  --warn: #8a5300; --warn-bg: #fff4e0; --err: #b3261e; --err-bg: #fdecea; --focus: #0f6cbd55;
+  --radius: 10px; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418; --panel: #1a1e24; --panel-2: #222830; --border: #2e3540; --text: #e6e9ee;
+    --muted: #9aa4b2; --accent: #4ea1f3; --accent-2: #1d2b3c; --ok: #5fd08f; --ok-bg: #16281e;
+    --warn: #f0b860; --warn-bg: #2d2414; --err: #ff8a80; --err-bg: #2f1a19; --focus: #4ea1f355;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.5 "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif; }
+header { background: var(--panel); border-bottom: 1px solid var(--border); padding: 14px 24px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; font-weight: 600; }
+header .sub { color: var(--muted); font-size: 13px; }
+header .grow { flex: 1; }
+.layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 24px; max-width: 1280px;
+  margin: 0 auto; padding: 24px; }
+nav.steps { position: sticky; top: 16px; align-self: start; display: flex; flex-direction: column; gap: 4px; }
+nav.steps button { all: unset; cursor: pointer; display: flex; gap: 10px; align-items: center;
+  padding: 10px 12px; border-radius: 8px; color: var(--muted); }
+nav.steps button .n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  border: 1px solid var(--border); font-size: 12px; font-weight: 600; background: var(--panel); flex: none; }
+nav.steps button[aria-current="step"] { background: var(--accent-2); color: var(--text); font-weight: 600; }
+nav.steps button[aria-current="step"] .n { background: var(--accent); color: #fff; border-color: var(--accent); }
+nav.steps button.done .n { background: var(--ok); color: #fff; border-color: var(--ok); }
+nav.steps button:disabled { cursor: not-allowed; opacity: .5; }
+nav.steps .basket { margin-top: 16px; padding: 12px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); font-size: 13px; }
+nav.steps .basket h3 { margin: 0 0 6px; font-size: 13px; }
+nav.steps .basket ul { list-style: none; margin: 0; padding: 0; }
+nav.steps .basket li { display: flex; justify-content: space-between; color: var(--muted); }
+nav.steps .basket li b { color: var(--text); }
+section.step { display: none; }
+section.step.active { display: block; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 20px; margin-bottom: 20px; }
+.card h2 { font-size: 16px; margin: 0 0 4px; }
+.card > p.hint, p.hint { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 16px; }
+label.f { display: block; font-weight: 500; font-size: 13px; }
+label.f > input, label.f > select, label.f > textarea { display: block; margin-top: 5px; }
+label.f .req { color: var(--err); }
+label.f small { display: block; font-weight: 400; color: var(--muted); }
+input[type=text], input[type=password], input[type=url], input[type=search], input[type=number], select, textarea {
+  font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; width: 100%; min-width: 0; }
+textarea { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; min-height: 90px; }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+input:invalid.touched { border-color: var(--err); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg label { padding: 7px 14px; cursor: pointer; font-size: 13px; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg input:checked + span { color: var(--accent); font-weight: 600; }
+.seg label:has(input:checked) { background: var(--accent-2); }
+.btn { font: inherit; border: 1px solid var(--border); background: var(--panel); color: var(--text);
+  border-radius: 8px; padding: 8px 14px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.row.end { justify-content: flex-end; }
+.spacer { flex: 1; }
+.status { font-size: 13px; padding: 8px 12px; border-radius: 8px; margin-top: 12px; display: none; }
+.status.show { display: block; }
+.status.ok { background: var(--ok-bg); color: var(--ok); }
+.status.err { background: var(--err-bg); color: var(--err); }
+.status.info { background: var(--accent-2); color: var(--text); }
+.status.warn { background: var(--warn-bg); color: var(--warn); }
+.pill { display: inline-block; white-space: nowrap; padding: 1px 8px; border-radius: 999px; font-size: 12px; background: var(--panel-2);
+  color: var(--muted); border: 1px solid var(--border); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+.pill.err { background: var(--err-bg); color: var(--err); border-color: transparent; }
+.pill.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; display: inline-block; animation: s .7s linear infinite; vertical-align: -2px; }
+@keyframes s { to { transform: rotate(360deg); } }
+details.group { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); margin-bottom: 14px; }
+details.group > summary { list-style: none; cursor: pointer; padding: 14px 18px; display: flex; gap: 10px; align-items: center; font-weight: 600; }
+details.group > summary::-webkit-details-marker { display: none; }
+details.group > summary::before { content: "▸"; color: var(--muted); transition: transform .15s; }
+details.group[open] > summary::before { transform: rotate(90deg); }
+details.group .body { padding: 0 18px 18px; display: grid; gap: 16px; }
+.picker { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.picker .ph { display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: var(--panel-2);
+  border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.picker .ph h4 { margin: 0; font-size: 14px; }
+.picker .ph .desc { color: var(--muted); font-size: 12px; }
+.picker .ph input[type=search] { width: 200px; padding: 5px 8px; }
+.picker .list { max-height: 280px; overflow: auto; }
+.picker .item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; align-items: center;
+  padding: 7px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.picker .item:last-child { border-bottom: none; }
+.picker .item:hover { background: var(--panel-2); }
+.picker .item .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker .item .d { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker .item.readonly { cursor: default; grid-template-columns: minmax(0, 1fr) auto; }
+.picker .empty { padding: 14px 12px; color: var(--muted); font-size: 13px; }
+.picker .foot { padding: 6px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
+.check { display: flex; gap: 8px; align-items: flex-start; }
+.check input { margin-top: 3px; }
+.check small { display: block; color: var(--muted); }
+table.items { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.items th, table.items td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.items th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+.kpi { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+.kpi .v { font-size: 22px; font-weight: 600; }
+.kpi .l { color: var(--muted); font-size: 12px; }
+pre.json { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+  overflow: auto; max-height: 360px; font-size: 12px; margin: 0; }
+.progress { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+.progress > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
+.stages { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; padding: 16px; }
+  nav.steps { position: static; flex-direction: row; overflow-x: auto; }
+  nav.steps .basket { display: none; }
+  nav.steps button .lbl { display: none; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Databricks → Microsoft Fabric migration</h1>
+    <div class="sub">Connect, pick what to migrate, choose the target, run. Credentials stay in this page and are sent only in request bodies; the service never stores them.</div>
+  </div>
+  <div class="grow"></div>
+  <a class="btn small" href="/docs" target="_blank" rel="noopener">API docs</a>
+</header>
+
+<div class="layout">
+  <nav class="steps" aria-label="Migration steps">
+    <button type="button" data-go="1" aria-current="step"><span class="n">1</span><span class="lbl">Connect</span></button>
+    <button type="button" data-go="2" disabled><span class="n">2</span><span class="lbl">Select from Databricks</span></button>
+    <button type="button" data-go="3" disabled><span class="n">3</span><span class="lbl">Fabric target &amp; options</span></button>
+    <button type="button" data-go="4" disabled><span class="n">4</span><span class="lbl">Review &amp; migrate</span></button>
+    <button type="button" data-go="5" disabled><span class="n">5</span><span class="lbl">Progress &amp; results</span></button>
+    <div class="basket" aria-live="polite">
+      <h3>Selected <span id="basketTotal" class="pill">0</span></h3>
+      <ul id="basket"><li>Nothing yet</li></ul>
+    </div>
+  </nav>
+
+  <main>
+    <!-- ── Step 1: connect ── -->
+    <section class="step active" data-step="1">
+      <form id="connectForm" novalidate>
+        <div class="card">
+          <h2>Service</h2>
+          <p class="hint">The migration API this page talks to. Leave the URL empty when the page is served by the service itself.</p>
+          <div class="grid">
+            <label class="f">API base URL <small>e.g. http://localhost:9093</small>
+              <input type="url" id="apiBase" placeholder="(same origin)" autocomplete="off"></label>
+            <label class="f">API key (X-API-Key) <small>Not needed when the server runs with AUTH_DISABLED=true</small>
+              <input type="password" id="apiKey" autocomplete="off"></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Databricks (source) <span class="req" aria-hidden="true" style="color:var(--err)">*</span></h2>
+          <p class="hint">Service principal (OAuth M2M) or personal access token. With a service principal the token is not sent.</p>
+          <div class="grid">
+            <label class="f" style="grid-column:1/-1">Workspace URL <span class="req">*</span>
+              <input type="url" id="dbxHost" required placeholder="https://adb-1234567890123456.7.azuredatabricks.net" autocomplete="off"></label>
+          </div>
+          <div class="row" style="margin:14px 0">
+            <span style="font-weight:500;font-size:13px">Authentication</span>
+            <div class="seg" role="radiogroup" aria-label="Databricks authentication">
+              <label><input type="radio" name="dbxAuth" value="sp" checked><span>Service principal</span></label>
+              <label><input type="radio" name="dbxAuth" value="pat"><span>Personal access token</span></label>
+            </div>
+          </div>
+          <div class="grid" id="dbxSp">
+            <label class="f">Client ID <span class="req">*</span>
+              <input type="text" id="dbxClientId" required autocomplete="off"></label>
+            <label class="f">Client secret <span class="req">*</span>
+              <input type="password" id="dbxClientSecret" required autocomplete="off"></label>
+          </div>
+          <div class="grid" id="dbxPat" hidden>
+            <label class="f">Personal access token <span class="req">*</span>
+              <input type="password" id="dbxToken" placeholder="dapi…" autocomplete="off"></label>
+          </div>
+          <div class="status" id="dbxStatus" role="status"></div>
+        </div>
+
+        <div class="card">
+          <h2>Microsoft Fabric (target) <span aria-hidden="true" style="color:var(--err)">*</span></h2>
+          <p class="hint">Service principal only. Add it to the target workspace as Contributor (or higher).</p>
+          <div class="grid">
+            <label class="f">Tenant ID <span class="req">*</span>
+              <input type="text" id="fabTenant" required placeholder="00000000-0000-0000-0000-000000000000 or contoso.onmicrosoft.com" autocomplete="off"></label>
+            <label class="f">Client ID <span class="req">*</span>
+              <input type="text" id="fabClientId" required autocomplete="off"></label>
+            <label class="f">Client secret <span class="req">*</span>
+              <input type="password" id="fabClientSecret" required autocomplete="off"></label>
+          </div>
+          <div class="status" id="fabStatus" role="status"></div>
+        </div>
+
+        <div class="row end">
+          <span class="hint" style="margin:0">Both connections must succeed before you can continue.</span>
+          <button type="submit" class="btn primary" id="connectBtn">Test connections &amp; load Databricks objects</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- ── Step 2: select ── -->
+    <section class="step" data-step="2">
+      <div class="card">
+        <div class="row">
+          <div>
+            <h2>Select what to migrate</h2>
+            <p class="hint" style="margin:0">Every list was loaded from your workspace. Only the objects you tick are migrated, each fetched directly (no crawl).</p>
+          </div>
+          <div class="spacer"></div>
+          <button type="button" class="btn" id="reloadAll">Reload all lists</button>
+          <button type="button" class="btn" id="clearSel">Clear selection</button>
+        </div>
+        <div class="status" id="loadStatus" role="status"></div>
+      </div>
+
+      <details class="group" open>
+        <summary>Code &amp; orchestration <span class="pill" data-count="code">0</span></summary>
+        <div class="body">
+          <div class="row">
+            <label class="f" style="flex:1">Workspace folders to search <small>comma separated, e.g. /Workspace/Shared, /Repos/team</small>
+              <input type="text" id="nbPaths" value="/"></label>
+            <button type="button" class="btn" id="reloadNb" style="align-self:flex-end">Search folders</button>
+          </div>
+          <div id="p-notebooks"></div>
+          <div id="p-workspace_files"></div>
+          <div id="p-jobs"></div>
+          <div id="p-pipelines"></div>
+          <div id="p-repos"></div>
+        </div>
+      </details>
+
+      <details class="group" open>
+        <summary>Data — Unity Catalog <span class="pill" data-count="data">0</span></summary>
+        <div class="body">
+          <div class="grid">
+            <label class="f">Catalog <select id="ucCatalog"><option value="">Loading…</option></select></label>
+            <label class="f">Schema <select id="ucSchema" disabled><option value="">Pick a catalog</option></select></label>
+          </div>
+          <div class="check" style="flex-wrap:wrap;gap:18px">
+            <label class="check"><input type="checkbox" class="whole" data-key="tables"> Every table/view of this schema</label>
+            <label class="check"><input type="checkbox" class="whole" data-key="volumes"> Every volume</label>
+            <label class="check"><input type="checkbox" class="whole" data-key="functions"> Every function</label>
+            <label class="check"><input type="checkbox" class="whole" data-key="models"> Every model</label>
+          </div>
+          <div id="p-tables"></div>
+          <div id="p-volumes"></div>
+          <div id="p-functions"></div>
+          <div id="p-models"></div>
+          <div id="p-external_locations"></div>
+          <div id="p-connections"></div>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Compute <span class="pill" data-count="compute">0</span></summary>
+        <div class="body">
+          <div id="p-clusters"></div>
+          <div id="p-libraries"></div>
+          <div id="p-warehouses"></div>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>SQL, BI &amp; ML <span class="pill" data-count="bi">0</span></summary>
+        <div class="body">
+          <div id="p-queries"></div>
+          <div id="p-dashboards"></div>
+          <div id="p-alerts"></div>
+          <div id="p-serving_endpoints"></div>
+        </div>
+      </details>
+
+      <details class="group">
+        <summary>Security <span class="pill" data-count="security">0</span></summary>
+        <div class="body"><div id="p-secret_scopes"></div></div>
+      </details>
+
+      <div class="row end">
+        <button type="button" class="btn" data-go="1">Back</button>
+        <button type="button" class="btn primary" id="toTarget">Next: Fabric target</button>
+      </div>
+    </section>
+
+    <!-- ── Step 3: target & options ── -->
+    <section class="step" data-step="3">
+      <div class="card">
+        <h2>Fabric target</h2>
+        <p class="hint">Workspaces and lakehouses visible to the Fabric service principal.</p>
+        <div class="grid">
+          <label class="f">Workspace <span class="req">*</span>
+            <select id="fabWorkspace" required><option value="">Loading…</option></select></label>
+          <label class="f">Destination lakehouse <small>all migrated data lands here</small>
+            <select id="fabLakehouseSel"><option value="">Choose a workspace first</option></select></label>
+          <label class="f" id="fabLakehouseNewWrap" hidden>New lakehouse name <span class="req">*</span> <small>created with schemas enabled on deploy</small>
+            <input type="text" id="fabLakehouseNew" autocomplete="off" placeholder="e.g. Src_LK" pattern="[A-Za-z][A-Za-z0-9_]{0,255}"></label>
+        </div>
+        <div class="status" id="lhInfo" role="status"></div>
+      </div>
+
+      <div class="card">
+        <h2>What should the migration do?</h2>
+        <div class="grid" style="margin-top:10px">
+          <label class="check"><input type="checkbox" id="optDeploy" checked>
+            <span>Deploy to Fabric<small>Create the lakehouse, Environment, notebooks, pipelines and schedules.</small></span></label>
+          <label class="check"><input type="checkbox" id="optCopy" checked>
+            <span>Copy data<small>Table data, volume files and workspace files; row counts validated. Needs a SQL warehouse.</small></span></label>
+          <label class="check"><input type="checkbox" id="optForce">
+            <span>Deploy despite preflight errors<small>Normally a preflight error stops the deploy.</small></span></label>
+          <label class="check"><input type="checkbox" id="optAiFix">
+            <span>Let the LLM fix TODO cells<small>Needs an LLM configured on the server.</small></span></label>
+        </div>
+        <div class="grid" style="margin-top:16px">
+          <label class="f">SQL warehouse for the data copy
+            <select id="optWarehouse"><option value="">Automatic (first available)</option></select></label>
+          <label class="f">Run mode
+            <select id="optMode"><option value="pipeline">Pipeline (deterministic stages)</option><option value="agent">Agent (the LLM drives the stages)</option></select></label>
+          <label class="f">Deploy only <small>empty = everything</small>
+            <select id="optOnly" multiple size="4">
+              <option value="environment">Environment</option><option value="notebook">Notebooks</option>
+              <option value="shortcuts">Shortcuts</option><option value="pipeline">Pipelines</option>
+            </select></label>
+        </div>
+        <details style="margin-top:16px">
+          <summary style="cursor:pointer;font-weight:500">Advanced: mapping overrides and agent instructions</summary>
+          <div class="grid" style="margin-top:12px">
+            <label class="f">Mapping overrides (JSON) <small>e.g. {"keyvault_url_default": "https://myvault.vault.azure.net/"}</small>
+              <textarea id="optMapping" spellcheck="false">{}</textarea></label>
+            <label class="f">Agent instructions <small>Only for agent mode</small>
+              <textarea id="optInstructions" maxlength="4000"></textarea></label>
+          </div>
+        </details>
+      </div>
+
+      <div class="row end">
+        <button type="button" class="btn" data-go="2">Back</button>
+        <button type="button" class="btn primary" id="toReview">Next: review</button>
+      </div>
+    </section>
+
+    <!-- ── Step 4: review ── -->
+    <section class="step" data-step="4">
+      <div class="card">
+        <h2>Review</h2>
+        <p class="hint">This is the request that will be sent to <code>POST /api/v1/migrations</code> (secrets masked here, sent in full).</p>
+        <div class="kpis" id="reviewKpis"></div>
+        <h3 style="font-size:14px;margin:18px 0 8px">Request body</h3>
+        <pre class="json" id="reviewJson"></pre>
+        <div class="status" id="submitStatus" role="status"></div>
+      </div>
+      <div class="row end">
+        <button type="button" class="btn" data-go="3">Back</button>
+        <button type="button" class="btn primary" id="startBtn">Start migration</button>
+      </div>
+    </section>
+
+    <!-- ── Step 5: progress ── -->
+    <section class="step" data-step="5">
+      <div class="card">
+        <div class="row">
+          <h2 style="margin:0">Migration <code id="jobId"></code></h2>
+          <span class="pill" id="jobStatus">queued</span>
+          <div class="spacer"></div>
+          <button type="button" class="btn small" id="cancelBtn">Cancel</button>
+        </div>
+        <div class="stages" id="stages"></div>
+        <div class="progress"><div id="progressBar"></div></div>
+        <div class="status" id="jobMsg" role="status"></div>
+      </div>
+      <div class="card" id="resultCard" hidden>
+        <h2>Results</h2>
+        <div class="kpis" id="resultKpis"></div>
+        <div class="row" style="margin:16px 0">
+          <button type="button" class="btn" data-dl="report">Open HTML report</button>
+          <button type="button" class="btn" data-dl="report.csv">Download CSV report</button>
+          <button type="button" class="btn" data-dl="download">Download all artifacts (zip)</button>
+          <div class="spacer"></div>
+          <label class="f" style="display:flex;align-items:center;gap:8px">Show
+            <select id="itemFilter"><option value="">All items</option><option value="migrated">Migrated</option>
+              <option value="needs_testing">Needs testing</option><option value="partial">Partial</option>
+              <option value="not_migrated">Not migrated</option></select></label>
+        </div>
+        <div style="overflow:auto"><table class="items"><thead><tr><th>Type</th><th>Name</th><th>Outcome</th><th>Deployment</th><th>Target</th><th>Notes</th></tr></thead>
+          <tbody id="itemsBody"></tbody></table></div>
+      </div>
+      <div class="row end">
+        <button type="button" class="btn" id="newMigration">Start another migration</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+// ── helpers ──────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of kids) if (c != null) n.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return n;
+};
+const store = {  // non-secret fields only; never credentials
+  get(k) { try { return localStorage.getItem("dbx2fabric." + k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem("dbx2fabric." + k, v); } catch { /* private mode */ } },
+};
+function setStatus(id, kind, text, busy = false) {
+  const s = $(id);
+  s.className = "status show " + kind;
+  s.replaceChildren();
+  if (busy) s.append(el("span", { class: "spin" }), " ");
+  s.append(text);
+}
+function clearStatus(id) { $(id).className = "status"; $(id).textContent = ""; }
+
+// ── API ──────────────────────────────────────────────────
+const api = {
+  base() { return ($("apiBase").value.trim() || "").replace(/\/+$/, "") + "/api/v1"; },
+  headers(json = true) {
+    const h = {};
+    if (json) h["Content-Type"] = "application/json";
+    const k = $("apiKey").value.trim();
+    if (k) h["X-API-Key"] = k;
+    return h;
+  },
+  async call(method, path, body) {
+    let r;
+    try {
+      r = await fetch(api.base() + path, {
+        method, headers: api.headers(body !== undefined),
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      throw new Error("Cannot reach the service at " + api.base() + " (" + e.message + ")");
+    }
+    const text = await r.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    if (!r.ok) {
+      const err = data && data.error;
+      const msg = err ? err.message + (err.field ? " [" + err.field + "]" : "")
+        : (data && data.detail ? JSON.stringify(data.detail) : text.slice(0, 300) || r.statusText);
+      const e = new Error(r.status + " — " + msg);
+      e.status = r.status;
+      throw e;
+    }
+    return data;
+  },
+  post(path, body) { return api.call("POST", path, body); },
+  get(path) { return api.call("GET", path); },
+};
+
+function dbxCreds() {
+  const sp = document.querySelector("input[name=dbxAuth]:checked").value === "sp";
+  return sp
+    ? { host: $("dbxHost").value.trim(), client_id: $("dbxClientId").value.trim(), client_secret: $("dbxClientSecret").value }
+    : { host: $("dbxHost").value.trim(), personal_access_token: $("dbxToken").value };
+}
+function fabCreds() {
+  return { tenant_id: $("fabTenant").value.trim(), client_id: $("fabClientId").value.trim(), client_secret: $("fabClientSecret").value };
+}
+
+// ── steps ────────────────────────────────────────────────
+const unlocked = new Set([1]);
+function go(n) {
+  n = Number(n);
+  if (!unlocked.has(n)) return;
+  document.querySelectorAll("section.step").forEach((s) => s.classList.toggle("active", Number(s.dataset.step) === n));
+  document.querySelectorAll("nav.steps button").forEach((b) => {
+    const k = Number(b.dataset.go);
+    b.disabled = !unlocked.has(k);
+    if (k === n) b.setAttribute("aria-current", "step"); else b.removeAttribute("aria-current");
+    b.classList.toggle("done", unlocked.has(k + 1) && k < n);
+  });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+function unlock(...ns) { ns.forEach((n) => unlocked.add(n)); document.querySelectorAll("nav.steps button").forEach((b) => { b.disabled = !unlocked.has(Number(b.dataset.go)); }); }
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-go]");
+  if (b && !b.disabled) go(b.dataset.go);
+});
+
+// ── step 1: connect ──────────────────────────────────────
+document.querySelectorAll("input[name=dbxAuth]").forEach((r) => r.addEventListener("change", () => {
+  const sp = document.querySelector("input[name=dbxAuth]:checked").value === "sp";
+  $("dbxSp").hidden = !sp; $("dbxPat").hidden = sp;
+  $("dbxClientId").required = sp; $("dbxClientSecret").required = sp; $("dbxToken").required = !sp;
+}));
+for (const id of ["apiBase", "dbxHost", "fabTenant", "fabClientId", "dbxClientId", "nbPaths"]) {
+  const v = store.get(id); if (v) $(id).value = v;
+  $(id).addEventListener("change", () => store.set(id, $(id).value));
+}
+document.querySelectorAll("#connectForm input").forEach((i) => i.addEventListener("blur", () => i.classList.add("touched")));
+
+$("connectForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  form.querySelectorAll("input").forEach((i) => i.classList.add("touched"));
+  const bad = [...form.querySelectorAll("input")].find((i) => !i.closest("[hidden]") && !i.checkValidity());
+  if (bad) { bad.focus(); bad.reportValidity(); return; }
+  const btn = $("connectBtn");
+  btn.disabled = true;
+  setStatus("dbxStatus", "info", "Connecting to Databricks…", true);
+  setStatus("fabStatus", "info", "Getting a Fabric token…", true);
+  const [d, f] = await Promise.allSettled([
+    api.post("/connections/databricks/test", { credentials: dbxCreds() }),
+    api.post("/connections/fabric/test", { credentials: fabCreds() }),
+  ]);
+  if (d.status === "fulfilled") {
+    setStatus("dbxStatus", "ok", "Connected as " + (d.value.user || "?") + " (" + d.value.auth_type.replaceAll("_", " ") + ")");
+  } else setStatus("dbxStatus", "err", "Databricks: " + d.reason.message);
+  if (f.status === "fulfilled") {
+    setStatus("fabStatus", "ok", "Service principal accepted; " + (f.value.workspaces_visible ?? "?") + " workspace(s) visible");
+  } else setStatus("fabStatus", "err", "Fabric: " + f.reason.message);
+  btn.disabled = false;
+  if (d.status === "fulfilled" && f.status === "fulfilled") {
+    unlock(2, 3);
+    go(2);
+    loadAll();
+    loadFabric();
+  }
+});
+
+// ── step 2: pickers ──────────────────────────────────────
+const SELECTION_KEYS = ["notebooks", "jobs", "clusters", "pipelines", "warehouses", "tables", "secret_scopes",
+  "volumes", "functions", "models", "queries", "alerts", "dashboards", "serving_endpoints", "repos",
+  "external_locations", "connections", "workspace_files"];
+const sel = Object.fromEntries(SELECTION_KEYS.map((k) => [k, new Set()]));
+const meta = (i, k) => (i.meta || {})[k];
+const join = (...xs) => xs.filter((x) => x !== null && x !== undefined && x !== "").join(" · ");
+const ucPath = (kind) => () => {
+  const c = $("ucCatalog").value, s = $("ucSchema").value;
+  return c && s ? `/databricks/catalogs/${encodeURIComponent(c)}/schemas/${encodeURIComponent(s)}/${kind}` : null;
+};
+const nbPaths = () => $("nbPaths").value.split(",").map((s) => s.trim()).filter(Boolean);
+
+const PICKERS = {
+  notebooks: { title: "Notebooks", group: "code", desc: "→ Fabric notebooks", path: "/databricks/notebooks",
+    body: () => ({ paths: nbPaths(), limit: 5000 }), label: (i) => i.path, detail: (i) => i.language },
+  workspace_files: { title: "Workspace files", group: "code", desc: "→ lakehouse Files/workspace_files (with data copy)",
+    path: "/databricks/workspace-files", body: () => ({ paths: nbPaths(), limit: 5000 }), label: (i) => i.location,
+    detail: (i) => meta(i, "size") ? Math.ceil(meta(i, "size") / 1024) + " KB" : "" },
+  jobs: { title: "Jobs", group: "code", desc: "→ Data pipelines + schedules", path: "/databricks/jobs",
+    body: () => ({ limit: 5000 }), label: (i) => i.name || "job " + i.job_id,
+    detail: (i) => join(i.tasks + " task(s)", (i.task_types || []).map((t) => t.replace("_task", "")).join(", "), i.schedule ? "scheduled" : "") },
+  pipelines: { title: "DLT / Lakeflow pipelines", group: "code", desc: "→ redesign work orders", path: "/databricks/pipelines",
+    label: (i) => i.name || i.pipeline_id, detail: (i) => i.state },
+  repos: { title: "Git folders (repos)", group: "code", desc: "→ Fabric Git integration (manual)", path: "/databricks/repos",
+    label: (i) => i.name, detail: (i) => join(meta(i, "provider"), meta(i, "branch")) },
+  tables: { title: "Tables & views", group: "data", desc: "→ lakehouse tables (shortcut or data copy)", path: ucPath("tables"),
+    needsSchema: true, label: (i) => i.name, detail: (i) => join(i.table_type, i.format) },
+  volumes: { title: "Volumes", group: "data", desc: "→ lakehouse Files", path: ucPath("volumes"), needsSchema: true,
+    label: (i) => i.id, detail: (i) => meta(i, "volume_type") },
+  functions: { title: "Functions", group: "data", desc: "→ Spark / Warehouse functions", path: ucPath("functions"), needsSchema: true,
+    label: (i) => i.id, detail: (i) => meta(i, "language") },
+  models: { title: "Registered models", group: "data", desc: "→ Fabric ML model (manual)", path: ucPath("models"), needsSchema: true,
+    label: (i) => i.id, detail: () => "" },
+  external_locations: { title: "External locations", group: "data", desc: "→ ADLS connection for shortcuts", path: "/databricks/external-locations",
+    label: (i) => i.name, detail: (i) => meta(i, "url") },
+  connections: { title: "Connections (federation)", group: "data", desc: "→ Fabric connection / copy job", path: "/databricks/connections",
+    label: (i) => i.name, detail: (i) => meta(i, "connection_type") },
+  clusters: { title: "Clusters", group: "compute", desc: "→ Fabric Environment (libraries come along)", path: "/databricks/clusters",
+    label: (i) => i.cluster_name || i.cluster_id, detail: (i) => join(i.spark_version, i.state) },
+  libraries: { title: "Cluster libraries", group: "compute", desc: "Migrated with their cluster: select the cluster", path: "/databricks/libraries",
+    readonly: true, label: (i) => i.name, detail: (i) => join(meta(i, "kind"), (meta(i, "clusters") || []).length + " cluster(s)") },
+  warehouses: { title: "SQL warehouses", group: "compute", desc: "→ Fabric Warehouse", path: "/databricks/warehouses",
+    label: (i) => i.name || i.id, detail: (i) => join(i.cluster_size, i.state, i.serverless ? "serverless" : "") },
+  queries: { title: "SQL queries", group: "bi", desc: "→ notebook cells", path: "/databricks/queries", label: (i) => i.name, detail: () => "" },
+  dashboards: { title: "AI/BI dashboards", group: "bi", desc: "→ Power BI report (manual)", path: "/databricks/dashboards", label: (i) => i.name, detail: (i) => meta(i, "lifecycle_state") },
+  alerts: { title: "SQL alerts", group: "bi", desc: "→ Fabric Activator (manual)", path: "/databricks/alerts", label: (i) => i.name, detail: (i) => meta(i, "state") },
+  serving_endpoints: { title: "Serving endpoints", group: "bi", desc: "→ Azure ML / AI Foundry (manual)", path: "/databricks/serving-endpoints",
+    label: (i) => i.name, detail: (i) => meta(i, "state") },
+  secret_scopes: { title: "Secret scopes", group: "security", desc: "→ Azure Key Vault (names only; values are never readable)", path: "/databricks/secret-scopes",
+    label: (i) => i.name, detail: (i) => (i.keys || []).length + " key(s)" },
+};
+const lists = {};  // key -> {items, idField, error, loading, filter}
+
+function renderPicker(key) {
+  const p = PICKERS[key], st = lists[key] || {}, host = $("p-" + key);
+  const filter = (st.filter || "").toLowerCase();
+  const items = (st.items || []).filter((i) => !filter || (p.label(i) + " " + (p.detail(i) || "")).toLowerCase().includes(filter));
+  const head = el("div", { class: "ph" },
+    el("h4", { text: p.title }), el("span", { class: "pill", text: st.items ? String(st.items.length) : "–" }),
+    el("span", { class: "desc", text: p.desc }), el("span", { class: "spacer" }));
+  if (st.items && st.items.length) {
+    const search = el("input", { type: "search", placeholder: "Filter…", value: st.filter || "", "aria-label": "Filter " + p.title });
+    search.addEventListener("input", () => { st.filter = search.value; renderPicker(key); $("p-" + key).querySelector("input[type=search]").focus(); });
+    head.append(search);
+    if (!p.readonly) {
+      head.append(el("button", { type: "button", class: "btn small", text: "Select shown", onclick: () => { items.forEach((i) => sel[key].add(String(i[st.idField]))); refresh(key); } }));
+      head.append(el("button", { type: "button", class: "btn small", text: "None", onclick: () => { items.forEach((i) => sel[key].delete(String(i[st.idField]))); refresh(key); } }));
+    }
+  }
+  head.append(el("button", { type: "button", class: "btn small", title: "Reload", text: "↻", "aria-label": "Reload " + p.title, onclick: () => loadList(key) }));
+  const list = el("div", { class: "list" });
+  if (st.loading) list.append(el("div", { class: "empty" }, el("span", { class: "spin" }), " Loading…"));
+  else if (st.error) list.append(el("div", { class: "empty", style: "color:var(--err)", text: st.error }));
+  else if (!st.items) list.append(el("div", { class: "empty", text: p.needsSchema ? "Pick a catalog and schema above." : "Not loaded yet." }));
+  else if (!items.length) list.append(el("div", { class: "empty", text: st.items.length ? "No match for the filter." : "None found." }));
+  const MAX = 500;
+  for (const i of items.slice(0, MAX)) {
+    if (p.readonly) {
+      list.append(el("div", { class: "item readonly" }, el("span", { class: "t", text: p.label(i) }), el("span", { class: "d", text: p.detail(i) || "" })));
+      continue;
+    }
+    const id = String(i[st.idField]);
+    const cb = el("input", { type: "checkbox", "aria-label": p.label(i) });
+    cb.checked = sel[key].has(id);
+    cb.addEventListener("change", () => { cb.checked ? sel[key].add(id) : sel[key].delete(id); updateBasket(); });
+    list.append(el("label", { class: "item", title: id }, cb, el("span", { class: "t", text: p.label(i) }), el("span", { class: "d", text: p.detail(i) || "" })));
+  }
+  const kids = [head, list];
+  if (items.length > MAX) kids.push(el("div", { class: "foot", text: `Showing ${MAX} of ${items.length}; use the filter to narrow down.` }));
+  if (st.warnings && st.warnings.length) kids.push(el("div", { class: "foot", style: "color:var(--warn)", text: st.warnings.slice(0, 3).join(" | ") }));
+  if (!p.readonly && sel[key].size) kids.push(el("div", { class: "foot", text: sel[key].size + " selected" + ([...sel[key]].some((x) => !(st.items || []).some((i) => String(i[st.idField]) === x)) ? " (some from other schemas or folders)" : "") }));
+  host.replaceChildren(el("div", { class: "picker" }, ...kids));
+}
+function refresh(key) { renderPicker(key); updateBasket(); }
+
+async function loadList(key) {
+  const p = PICKERS[key];
+  const path = typeof p.path === "function" ? p.path() : p.path;
+  const st = (lists[key] = lists[key] || {});
+  if (!path) { st.items = null; renderPicker(key); return; }
+  st.loading = true; st.error = null; renderPicker(key);
+  try {
+    const r = await api.post(path, { credentials: dbxCreds(), ...(p.body ? p.body() : {}) });
+    st.items = r.items || [];
+    st.idField = r.id_field || "id";
+    st.warnings = r.warnings || [];
+    if (r.truncated) st.warnings.unshift("List truncated: narrow the folders.");
+  } catch (e) {
+    st.items = null; st.error = e.message;
+  } finally {
+    st.loading = false; renderPicker(key);
+    if (key === "warehouses") fillWarehouses();
+  }
+}
+
+async function pool(tasks, n = 4) {
+  const q = [...tasks];
+  await Promise.all(Array.from({ length: n }, async () => { while (q.length) await q.shift()(); }));
+}
+
+async function loadAll() {
+  setStatus("loadStatus", "info", "Loading every list from Databricks…", true);
+  Object.keys(PICKERS).forEach(renderPicker);
+  const keys = Object.keys(PICKERS).filter((k) => !PICKERS[k].needsSchema);
+  await pool([() => loadCatalogs(), ...keys.map((k) => () => loadList(k))]);
+  const failed = Object.keys(PICKERS).filter((k) => lists[k] && lists[k].error);
+  if (failed.length) setStatus("loadStatus", "warn", `Loaded, but ${failed.length} list(s) could not be read (permissions?): ` + failed.map((k) => PICKERS[k].title).join(", "));
+  else setStatus("loadStatus", "ok", "All lists loaded. Tick what you want to migrate.");
+}
+
+async function loadCatalogs() {
+  const c = $("ucCatalog");
+  c.replaceChildren(el("option", { value: "", text: "Loading…" }));
+  try {
+    const r = await api.post("/databricks/catalogs", { credentials: dbxCreds(), include_system: false });
+    c.replaceChildren(el("option", { value: "", text: r.items.length ? "Choose a catalog" : "No catalogs" }),
+      ...r.items.map((x) => el("option", { value: x.name, text: x.name })));
+    const last = store.get("ucCatalog");
+    if (last && r.items.some((x) => x.name === last)) { c.value = last; await loadSchemas(); }
+  } catch (e) {
+    c.replaceChildren(el("option", { value: "", text: "Error: " + e.message }));
+  }
+}
+async function loadSchemas() {
+  const cat = $("ucCatalog").value, s = $("ucSchema");
+  store.set("ucCatalog", cat);
+  s.disabled = !cat;
+  s.replaceChildren(el("option", { value: "", text: cat ? "Loading…" : "Pick a catalog" }));
+  ["tables", "volumes", "functions", "models"].forEach((k) => { if (lists[k]) lists[k].items = null; renderPicker(k); });
+  if (!cat) return;
+  try {
+    const r = await api.post(`/databricks/catalogs/${encodeURIComponent(cat)}/schemas`, { credentials: dbxCreds() });
+    s.replaceChildren(el("option", { value: "", text: r.items.length ? "Choose a schema" : "No schemas" }),
+      ...r.items.map((x) => el("option", { value: x.name, text: x.name })));
+    const last = store.get("ucSchema");
+    if (last && r.items.some((x) => x.name === last)) { s.value = last; schemaChanged(); }
+  } catch (e) {
+    s.replaceChildren(el("option", { value: "", text: "Error: " + e.message }));
+  }
+}
+function schemaChanged() {
+  store.set("ucSchema", $("ucSchema").value);
+  syncWhole();
+  ["tables", "volumes", "functions", "models"].forEach((k) => loadList(k));
+}
+const schemaKey = () => $("ucCatalog").value && $("ucSchema").value ? $("ucCatalog").value + "." + $("ucSchema").value : "";
+function syncWhole() {
+  document.querySelectorAll("input.whole").forEach((cb) => {
+    cb.disabled = !schemaKey();
+    cb.checked = !!schemaKey() && sel[cb.dataset.key].has(schemaKey());
+  });
+}
+$("ucCatalog").addEventListener("change", loadSchemas);
+$("ucSchema").addEventListener("change", schemaChanged);
+document.querySelectorAll("input.whole").forEach((cb) => cb.addEventListener("change", () => {
+  const k = schemaKey(); if (!k) return;
+  cb.checked ? sel[cb.dataset.key].add(k) : sel[cb.dataset.key].delete(k);
+  refresh(cb.dataset.key);
+}));
+$("reloadAll").addEventListener("click", loadAll);
+$("reloadNb").addEventListener("click", () => { store.set("nbPaths", $("nbPaths").value); loadList("notebooks"); loadList("workspace_files"); });
+$("clearSel").addEventListener("click", () => { SELECTION_KEYS.forEach((k) => sel[k].clear()); Object.keys(PICKERS).forEach(renderPicker); syncWhole(); updateBasket(); });
+
+function updateBasket() {
+  const ul = $("basket"), rows = SELECTION_KEYS.filter((k) => sel[k].size);
+  const total = rows.reduce((n, k) => n + sel[k].size, 0);
+  $("basketTotal").textContent = String(total);
+  ul.replaceChildren(...(rows.length ? rows.map((k) => el("li", {}, (PICKERS[k] ? PICKERS[k].title : k), el("b", { text: String(sel[k].size) })))
+    : [el("li", { text: "Nothing yet" })]));
+  const groups = {};
+  SELECTION_KEYS.forEach((k) => { const g = PICKERS[k] && PICKERS[k].group; if (g) groups[g] = (groups[g] || 0) + sel[k].size; });
+  document.querySelectorAll("[data-count]").forEach((p) => { p.textContent = String(groups[p.dataset.count] || 0); });
+}
+
+let missingAck = false;
+$("toTarget").addEventListener("click", () => {
+  if (!SELECTION_KEYS.some((k) => sel[k].size)) { setStatus("loadStatus", "err", "Select at least one object to migrate."); return; }
+  // a job's pipeline can only deploy when the notebooks it runs are migrated too
+  const missing = missingJobNotebooks();
+  if (missing.length && !missingAck) {
+    const s = $("loadStatus");
+    s.className = "status show warn";
+    s.replaceChildren(`Selected jobs run ${missing.length} notebook(s) you did not select: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}. Their pipelines will fail to deploy unless those notebooks already exist in Fabric. `,
+      el("button", { type: "button", class: "btn small", text: "Add them", onclick: () => { missing.forEach((m) => sel.notebooks.add(m)); refresh("notebooks"); clearStatus("loadStatus"); } }), " ",
+      el("button", { type: "button", class: "btn small", text: "Continue anyway", onclick: () => { missingAck = true; $("toTarget").click(); } }));
+    s.scrollIntoView({ behavior: "smooth", block: "center" });
+    return;
+  }
+  missingAck = false;
+  unlock(3); go(3);
+});
+function missingJobNotebooks() {
+  const jobs = (lists.jobs && lists.jobs.items) || [];
+  const chosen = [...sel.notebooks];
+  const covered = (path) => chosen.some((c) => path === c || path.startsWith(c.replace(/\/+$/, "") + "/") || c === "/");
+  const out = new Set();
+  for (const j of jobs) if (sel.jobs.has(String(j.job_id))) for (const nb of j.notebook_paths || []) if (nb && !covered(nb)) out.add(nb);
+  return [...out];
+}
+
+// ── step 3: Fabric target ────────────────────────────────
+async function loadFabric() {
+  const w = $("fabWorkspace");
+  w.replaceChildren(el("option", { value: "", text: "Loading…" }));
+  try {
+    const r = await api.post("/fabric/workspaces", { credentials: fabCreds() });
+    w.replaceChildren(el("option", { value: "", text: r.items.length ? "Choose a workspace" : "No workspace visible: add the service principal to one" }),
+      ...r.items.map((x) => el("option", { value: x.id, text: x.name + (x.capacity_id ? "" : "  (no capacity)") })));
+    const last = store.get("fabWorkspace");
+    if (last && r.items.some((x) => x.id === last)) { w.value = last; loadLakehouses(); }
+  } catch (e) {
+    w.replaceChildren(el("option", { value: "", text: "Error: " + e.message }));
+  }
+}
+const NEW_LH = "__new__";
+function lakehouseName() {
+  const v = $("fabLakehouseSel").value;
+  return v === NEW_LH ? $("fabLakehouseNew").value.trim() : v;
+}
+async function loadLakehouses() {
+  const ws = $("fabWorkspace").value, s = $("fabLakehouseSel");
+  store.set("fabWorkspace", ws);
+  clearStatus("lhInfo");
+  if (!ws) { s.replaceChildren(el("option", { value: "", text: "Choose a workspace first" })); lhChanged(); return; }
+  s.replaceChildren(el("option", { value: "", text: "Loading…" }));
+  try {
+    const r = await api.post(`/fabric/workspaces/${encodeURIComponent(ws)}/lakehouses`, { credentials: fabCreds() });
+    lists.lakehouses = r.items;
+    s.replaceChildren(
+      el("option", { value: "", text: "One lakehouse per catalog (default names)" }),
+      ...r.items.map((x) => el("option", { value: x.name, text: x.name + (x.schemas_enabled ? "" : "  (no schemas)") })),
+      el("option", { value: NEW_LH, text: "+ New lakehouse…" }));
+    const last = store.get("fabLakehouse");
+    if (last && r.items.some((x) => x.name === last)) s.value = last;
+    else if (last) { s.value = NEW_LH; $("fabLakehouseNew").value = last; }
+  } catch (e) {
+    s.replaceChildren(el("option", { value: "", text: "One lakehouse per catalog (default names)" }), el("option", { value: NEW_LH, text: "+ New lakehouse…" }));
+    setStatus("lhInfo", "err", "Lakehouses: " + e.message);
+    return;
+  }
+  lhChanged();
+}
+function lhChanged() {
+  const isNew = $("fabLakehouseSel").value === NEW_LH, name = lakehouseName();
+  $("fabLakehouseNewWrap").hidden = !isNew;
+  $("fabLakehouseNew").required = isNew;
+  store.set("fabLakehouse", name);
+  const hit = (lists.lakehouses || []).find((x) => x.name.toLowerCase() === name.toLowerCase());
+  if (!$("fabWorkspace").value) return;
+  if (!name) setStatus("lhInfo", "info", isNew ? "Type a name for the new lakehouse." : "Each Databricks catalog gets its own lakehouse (lh_<catalog>).");
+  else if (!hit) setStatus("lhInfo", "info", `"${name}" does not exist yet: it will be created with schemas enabled.`);
+  else if (!hit.schemas_enabled) setStatus("lhInfo", "warn", `"${hit.name}" is not schema-enabled: tables are written as schema_table and 3-part names will not resolve.`);
+  else setStatus("lhInfo", "ok", `"${hit.name}" exists and is schema-enabled.`);
+}
+$("fabWorkspace").addEventListener("change", loadLakehouses);
+$("fabLakehouseSel").addEventListener("change", () => { lhChanged(); if ($("fabLakehouseSel").value === NEW_LH) $("fabLakehouseNew").focus(); });
+$("fabLakehouseNew").addEventListener("input", lhChanged);
+function fillWarehouses() {
+  const s = $("optWarehouse"), cur = s.value;
+  s.replaceChildren(el("option", { value: "", text: "Automatic (first available)" }),
+    ...((lists.warehouses && lists.warehouses.items) || []).map((w) => el("option", { value: w.id, text: (w.name || w.id) + " (" + (w.state || "?") + ")" })));
+  s.value = cur;
+}
+$("optDeploy").addEventListener("change", () => { $("optForce").disabled = !$("optDeploy").checked; $("optOnly").disabled = !$("optDeploy").checked; });
+$("optCopy").addEventListener("change", () => { $("optWarehouse").disabled = !$("optCopy").checked; });
+
+// ── step 4: review ───────────────────────────────────────
+function buildRequest() {
+  let mapping = {};
+  const raw = $("optMapping").value.trim();
+  if (raw) {
+    try { mapping = JSON.parse(raw); } catch (e) { throw new Error("Mapping overrides are not valid JSON: " + e.message); }
+    if (typeof mapping !== "object" || Array.isArray(mapping) || mapping === null) throw new Error("Mapping overrides must be a JSON object.");
+  }
+  if (!$("fabWorkspace").value) throw new Error("Choose the Fabric workspace.");
+  if ($("fabLakehouseSel").value === NEW_LH && !$("fabLakehouseNew").checkValidity())
+    throw new Error("New lakehouse name: start with a letter; letters, digits and _ only.");
+  const selection = {};
+  SELECTION_KEYS.forEach((k) => { if (sel[k].size) selection[k] = [...sel[k]]; });
+  const options = {
+    mode: $("optMode").value,
+    deploy: $("optDeploy").checked,
+    copy_data: $("optCopy").checked,
+    ai_fix: $("optAiFix").checked,
+    force_deploy: $("optDeploy").checked && $("optForce").checked,
+    deploy_only: $("optDeploy").checked ? [...$("optOnly").selectedOptions].map((o) => o.value) : [],
+  };
+  if (options.mode === "agent" && $("optInstructions").value.trim()) options.agent_instructions = $("optInstructions").value.trim();
+  return {
+    source: { type: "databricks", credentials: dbxCreds(), selection, warehouse_id: $("optCopy").checked && $("optWarehouse").value ? $("optWarehouse").value : null },
+    target: { workspace_id: $("fabWorkspace").value, lakehouse: lakehouseName() || null, credentials: fabCreds() },
+    mapping,
+    options,
+  };
+}
+function masked(req) {
+  const m = JSON.parse(JSON.stringify(req));
+  for (const c of [m.source.credentials, m.target.credentials]) {
+    for (const k of ["client_secret", "personal_access_token"]) if (c[k]) c[k] = "••••••••";
+  }
+  return m;
+}
+$("toReview").addEventListener("click", () => {
+  let req;
+  try { req = buildRequest(); } catch (e) { setStatus("lhInfo", "err", e.message); return; }
+  const wsName = $("fabWorkspace").selectedOptions[0] ? $("fabWorkspace").selectedOptions[0].textContent : "";
+  const total = Object.values(req.source.selection).reduce((n, v) => n + v.length, 0);
+  $("reviewKpis").replaceChildren(
+    kpi(total, "objects selected"),
+    kpi(wsName, "Fabric workspace"),
+    kpi(req.target.lakehouse || "per catalog", "lakehouse"),
+    kpi([req.options.deploy ? "deploy" : "convert only", req.options.copy_data ? "copy data" : ""].filter(Boolean).join(" + "), "actions"),
+  );
+  $("reviewJson").textContent = JSON.stringify(masked(req), null, 2);
+  clearStatus("submitStatus");
+  unlock(4); go(4);
+});
+function kpi(v, l) { return el("div", { class: "kpi" }, el("div", { class: "v", text: String(v) }), el("div", { class: "l", text: l })); }
+
+// ── step 5: run & follow ─────────────────────────────────
+let jobId = null, pollTimer = null;
+const STAGES = ["inventory", "plan", "convert", "preflight", "deploy", "copy_data", "report"];
+$("startBtn").addEventListener("click", async () => {
+  let req;
+  try { req = buildRequest(); } catch (e) { setStatus("submitStatus", "err", e.message); return; }
+  $("startBtn").disabled = true;
+  setStatus("submitStatus", "info", "Submitting…", true);
+  try {
+    const r = await api.post("/migrations", req);
+    jobId = r.id;
+    $("jobId").textContent = jobId;
+    $("resultCard").hidden = true;
+    unlock(5); go(5);
+    poll();
+  } catch (e) {
+    setStatus("submitStatus", "err", e.message);
+  } finally {
+    $("startBtn").disabled = false;
+  }
+});
+
+async function poll() {
+  clearTimeout(pollTimer);
+  try {
+    const j = await api.get("/migrations/" + jobId);
+    renderJob(j);
+    if (["queued", "running"].includes(j.status)) pollTimer = setTimeout(poll, 3000);
+    else loadItems();
+  } catch (e) {
+    setStatus("jobMsg", "err", "Status: " + e.message);
+    pollTimer = setTimeout(poll, 6000);
+  }
+}
+function renderJob(j) {
+  const pill = $("jobStatus");
+  pill.textContent = j.status;
+  pill.className = "pill " + ({ succeeded: "ok", failed: "err", cancelled: "warn" }[j.status] || "");
+  const want = STAGES.filter((s) => (s !== "deploy" || (j.options || {}).deploy) && (s !== "copy_data" || (j.options || {}).copy_data));
+  const cur = want.indexOf(j.stage);
+  const doneAll = j.status === "succeeded";
+  $("stages").replaceChildren(...want.map((s, i) => el("span", {
+    class: "pill " + (doneAll || (cur >= 0 && i < cur) ? "ok" : i === cur ? "warn" : ""), text: s.replace("_", " ") })));
+  $("progressBar").style.width = (doneAll ? 100 : cur >= 0 ? Math.round((cur / want.length) * 100) : 3) + "%";
+  $("cancelBtn").disabled = !["queued", "running"].includes(j.status);
+  if (j.status === "failed") setStatus("jobMsg", "err", (j.error && j.error.message) || "The migration failed.");
+  else if (j.status === "cancelled") setStatus("jobMsg", "warn", "The migration was cancelled.");
+  else if (j.status === "succeeded") {
+    const dc = j.data_copy;
+    setStatus("jobMsg", "ok", "Finished." + (dc ? ` Data copy: ${dc.copied ?? 0} table(s) copied, ${dc.failed ?? 0} failed` + (dc.files ? `, ${dc.files.files ?? 0} file(s)` : "") + "." : ""));
+  } else setStatus("jobMsg", "info", j.status === "queued" ? "Waiting for a free worker…" : "Running: " + (j.stage || "starting") + "…", true);
+}
+async function loadItems() {
+  try {
+    const f = $("itemFilter").value;
+    const r = await api.get("/migrations/" + jobId + "/items" + (f ? "?outcome=" + encodeURIComponent(f) : ""));
+    const s = r.summary || {};
+    $("resultKpis").replaceChildren(kpi(s.total ?? 0, "items"), kpi(s.migrated ?? 0, "migrated"), kpi(s.needs_testing ?? 0, "needs testing"),
+      kpi(s.partial ?? 0, "partial"), kpi(s.not_migrated ?? 0, "not migrated"), kpi(s.deployed ?? 0, "deployed"));
+    const OUT = { migrated: "ok", needs_testing: "", partial: "warn", not_migrated: "err" };
+    $("itemsBody").replaceChildren(...(r.items || []).map((i) => el("tr", {},
+      el("td", { text: i.type }), el("td", { text: i.name }),
+      el("td", {}, el("span", { class: "pill " + (OUT[i.outcome] ?? ""), text: (i.outcome || "").replace("_", " ") })),
+      el("td", { text: i.deployment || "" }), el("td", { text: join(i.target_type, i.target_name) }),
+      el("td", { class: "d", style: "max-width:420px;color:var(--muted)", text: (i.reasons || []).concat(i.actions || []).slice(0, 3).join(" | ") }))));
+    $("resultCard").hidden = false;
+  } catch (e) {
+    setStatus("jobMsg", "err", "Items: " + e.message);
+  }
+}
+$("itemFilter").addEventListener("change", loadItems);
+$("cancelBtn").addEventListener("click", async () => {
+  try { await api.post("/migrations/" + jobId + "/cancel"); poll(); } catch (e) { setStatus("jobMsg", "err", "Cancel: " + e.message); }
+});
+document.querySelectorAll("[data-dl]").forEach((b) => b.addEventListener("click", async () => {
+  // fetch with the API key header, then hand the file to the browser
+  const what = b.dataset.dl;
+  try {
+    const r = await fetch(api.base() + "/migrations/" + jobId + "/" + what, { headers: api.headers(false) });
+    if (!r.ok) throw new Error(r.status + " " + (await r.text()).slice(0, 200));
+    const url = URL.createObjectURL(await r.blob());
+    if (what === "report") window.open(url, "_blank", "noopener");
+    else el("a", { href: url, download: jobId + (what === "download" ? ".zip" : "_report.csv") }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { setStatus("jobMsg", "err", "Download: " + e.message); }
+}));
+$("newMigration").addEventListener("click", () => { clearTimeout(pollTimer); unlocked.delete(5); unlocked.delete(4); go(2); });
+
+Object.keys(PICKERS).forEach(renderPicker);
+syncWhole();
+updateBasket();
+</script>
+</body>
+</html>

@@ -109,3 +109,18 @@ def test_llm_connection_check(tmp_path: Path) -> None:
         }
     with TestClient(create_app(make_settings(tmp_path))) as c:
         assert c.post("/api/v1/connections/llm/test").status_code == 503
+
+
+def test_migration_form_is_served_without_auth(tmp_path: Path) -> None:
+    """The static form holds no data; every API call it makes carries the user's key."""
+    app = create_app(make_settings(tmp_path, AUTH_DISABLED=False, API_KEY_HASHES=hash_api_key("k")))
+    with TestClient(app) as c:
+        r = c.get("/ui")
+        assert r.status_code == 200 and r.headers["content-type"].startswith("text/html")
+        assert r.headers["cache-control"] == "no-store"
+        page = r.text
+        assert 'id="connectForm"' in page and "/connections/databricks/test" in page
+        assert "localStorage.setItem" in page and "client_secret" in page
+        root = c.get("/", follow_redirects=False)
+        assert root.status_code == 307 and root.headers["location"] == "/ui"
+        assert c.get("/api/v1/migrations").status_code == 401  # the API itself stays protected
