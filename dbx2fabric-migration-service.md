@@ -252,6 +252,9 @@ mandatory and both connection tests must pass; (2) every browse list (§5.10) is
 objects (whole schemas allowed) and is warned when selected jobs run notebooks that are not selected;
 (3) Fabric workspace, destination lakehouse (existing or new) and options; (4) review of the masked
 request; (5) `POST /migrations`, status polling, item outcomes and report/zip downloads.
+**Demo mode** (the default; `?mode=demo|live` or the header switch, remembered in the browser) answers
+every call inside the page with sample data in the same response shapes, accepts any non-empty value
+and simulates the migration stages, so the UI can be reviewed with no backend or credentials.
 
 ### 5.9 Data copy — `options.copy_data` (or `copy_data` on `POST /{id}/deploy`)
 For every table (MANAGED / EXTERNAL / MATERIALIZED_VIEW / STREAMING_TABLE; views are recreated,

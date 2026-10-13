@@ -121,6 +121,7 @@ def test_migration_form_is_served_without_auth(tmp_path: Path) -> None:
         page = r.text
         assert 'id="connectForm"' in page and "/connections/databricks/test" in page
         assert "localStorage.setItem" in page and "client_secret" in page
+        assert "async function mockApi" in page and 'id="modeSwitch"' in page  # demo mode + switch
         root = c.get("/", follow_redirects=False)
         assert root.status_code == 307 and root.headers["location"] == "/ui"
         assert c.get("/api/v1/migrations").status_code == 401  # the API itself stays protected

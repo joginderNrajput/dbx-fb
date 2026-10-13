@@ -104,6 +104,7 @@ curl -s localhost:9093/readyz           # storage ok; reports whether AI is conf
 ```
 
 Migration form (connect → select → target → migrate, no curl needed): <http://localhost:9093/ui>.
+It starts in demo mode (sample data, no API calls); switch to Live in its header for real migrations.
 Interactive API docs (try every endpoint from the browser): <http://localhost:9093/docs>.
 Every endpoint as a copy-paste curl command, importable into Postman: [`api-curl-reference.md`](api-curl-reference.md).
 

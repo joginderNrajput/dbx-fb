@@ -129,6 +129,14 @@ pre.json { background: var(--panel-2); border: 1px solid var(--border); border-r
 .progress { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
 .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
 .stages { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.modeswitch { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; cursor: pointer;
+  padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); }
+.modeswitch input { appearance: none; width: 32px; height: 18px; border-radius: 999px; background: var(--warn); position: relative; margin: 0; cursor: pointer; }
+.modeswitch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+.modeswitch input:checked { background: var(--ok); }
+.modeswitch input:checked::after { left: 16px; }
+.demo-banner { background: var(--warn-bg); color: var(--warn); border-bottom: 1px solid var(--border); padding: 10px 24px; font-size: 13px; }
+.demo-banner code { background: var(--panel); padding: 0 4px; border-radius: 4px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 @media (max-width: 860px) {
   .layout { grid-template-columns: 1fr; padding: 16px; }
@@ -145,9 +153,15 @@ pre.json { background: var(--panel-2); border: 1px solid var(--border); border-r
     <div class="sub">Connect, pick what to migrate, choose the target, run. Credentials stay in this page and are sent only in request bodies; the service never stores them.</div>
   </div>
   <div class="grow"></div>
+  <label class="modeswitch" title="Demo mode answers every call in the page with sample data; Live mode calls the migration API">
+    <input type="checkbox" id="modeSwitch" role="switch"> <span id="modeLabel">Demo mode</span></label>
   <a class="btn small" href="/docs" target="_blank" rel="noopener">API docs</a>
 </header>
 
+<div class="demo-banner" id="demoBanner" hidden role="note">
+  <b>Demo mode</b> — nothing is sent anywhere. Type any values (e.g. <code>abc</code>) in the required fields; every list, the
+  connection tests and the migration itself are simulated with sample data. Switch to <b>Live</b> in the header to call the real API.
+</div>
 <div class="layout">
   <nav class="steps" aria-label="Migration steps">
     <button type="button" data-go="1" aria-current="step"><span class="n">1</span><span class="lbl">Connect</span></button>
@@ -443,6 +457,172 @@ function setStatus(id, kind, text, busy = false) {
 }
 function clearStatus(id) { $(id).className = "status"; $(id).textContent = ""; }
 
+// ── demo mode: every API call answered in the page with sample data (no backend) ──
+const DEMO = (() => {
+  const q = new URLSearchParams(location.search).get("mode");
+  if (q === "live" || q === "demo") { store.set("mode", q); return q === "demo"; }
+  return store.get("mode") !== "live";
+})();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const asset = (type, name, location, meta = {}) => ({ id: name, type, name, location, meta });
+const MOCK = {
+  notebooks: [
+    ["/Workspace/Shared/etl/ingest_orders", "PYTHON"], ["/Workspace/Shared/etl/clean_orders", "PYTHON"],
+    ["/Workspace/Shared/etl/publish_sales", "SQL"], ["/Workspace/Shared/reporting/daily_kpis", "SQL"],
+    ["/Workspace/Shared/ml/train_churn", "PYTHON"], ["/Repos/data-team/pipelines/load_customers", "PYTHON"],
+    ["/Repos/data-team/pipelines/scd2_merge", "SCALA"], ["/Users/analyst@contoso.com/exploration", "PYTHON"],
+  ].map(([path, language], i) => ({ path, name: path.split("/").pop(), language, object_id: 1000 + i })),
+  workspace_files: [
+    asset("Workspace File", "/Workspace/Shared/etl/config.yaml", "/Workspace/Shared/etl/config.yaml", { size: 2048 }),
+    asset("Workspace File", "/Workspace/Shared/etl/utils.py", "/Workspace/Shared/etl/utils.py", { size: 8192 }),
+  ].map((a) => ({ ...a, id: a.location })),
+  jobs: [
+    { job_id: 101, name: "nightly_orders", tasks: 3, task_types: ["notebook_task"], notebook_paths: ["/Workspace/Shared/etl/ingest_orders", "/Workspace/Shared/etl/clean_orders", "/Workspace/Shared/etl/publish_sales"], schedule: "0 30 2 * * ?" },
+    { job_id: 102, name: "hourly_kpis", tasks: 1, task_types: ["notebook_task"], notebook_paths: ["/Workspace/Shared/reporting/daily_kpis"], schedule: "0 0 * * * ?" },
+    { job_id: 103, name: "weekly_churn_model", tasks: 2, task_types: ["notebook_task", "spark_python_task"], notebook_paths: ["/Workspace/Shared/ml/train_churn"], schedule: null },
+    { job_id: 104, name: "master_orchestrator", tasks: 2, task_types: ["run_job_task"], notebook_paths: [], schedule: "0 0 1 * * ?" },
+  ],
+  pipelines: [{ pipeline_id: "dlt-7f3a", name: "bronze_to_silver_dlt", state: "IDLE" }, { pipeline_id: "dlt-91c2", name: "streaming_events", state: "RUNNING" }],
+  repos: [asset("Repo", "/Repos/data-team/pipelines", "repo:11", { provider: "azureDevOpsServices", branch: "main" })],
+  clusters: [
+    { cluster_id: "0412-abc123", cluster_name: "etl-shared", state: "RUNNING", spark_version: "14.3.x-scala2.12" },
+    { cluster_id: "0412-def456", cluster_name: "ml-gpu", state: "TERMINATED", spark_version: "15.4.x-gpu-ml-scala2.12" },
+  ],
+  libraries: [
+    asset("Library", "great-expectations==1.0.5", "library:pypi", { kind: "pypi", clusters: ["0412-abc123"] }),
+    asset("Library", "com.databricks:spark-xml_2.12:0.18.0", "library:maven", { kind: "maven", clusters: ["0412-abc123"] }),
+    asset("Library", "scikit-learn==1.5.2", "library:pypi", { kind: "pypi", clusters: ["0412-def456"] }),
+  ],
+  warehouses: [{ id: "wh-a1b2", name: "Shared Serverless", state: "RUNNING", cluster_size: "Small", serverless: true }, { id: "wh-c3d4", name: "BI Pro", state: "STOPPED", cluster_size: "Medium", serverless: false }],
+  catalogs: [{ name: "sales_prod" }, { name: "finance" }],
+  schemas: { sales_prod: ["bronze", "silver", "gold"], finance: ["ledger", "reporting"] },
+  tables: (c, s) => ["orders", "customers", "order_items", s === "gold" ? "v_daily_sales" : "products"].map((t, i) => ({
+    full_name: `${c}.${s}.${t}`, name: t, table_type: t.startsWith("v_") ? "VIEW" : i % 2 ? "EXTERNAL" : "MANAGED", format: t.startsWith("v_") ? null : "DELTA" })),
+  volumes: (c, s) => [asset("Volume", `${c}.${s}.landing`, "", { volume_type: "MANAGED" }), asset("Volume", `${c}.${s}.archive`, "", { volume_type: "EXTERNAL" })],
+  functions: (c, s) => [asset("Function", `${c}.${s}.mask_email`, "", { language: "SQL" }), asset("Function", `${c}.${s}.parse_ua`, "", { language: "PYTHON" })],
+  models: (c, s) => (s === "gold" ? [asset("ML Model", `${c}.${s}.churn_model`, "")] : []),
+  external_locations: [asset("External Location", "landing_zone", "abfss://landing@contosodl.dfs.core.windows.net/", { url: "abfss://landing@contosodl.dfs.core.windows.net/" })],
+  connections: [asset("Connection", "erp_postgres", "connection:erp_postgres", { connection_type: "POSTGRESQL" })],
+  queries: [asset("SQL Query", "Top customers by revenue", "query:q1", { query_id: "q1" }), asset("SQL Query", "Late orders", "query:q2", { query_id: "q2" })],
+  dashboards: [asset("Dashboard", "Sales overview", "dashboard:d1", { dashboard_id: "d1", lifecycle_state: "ACTIVE" })],
+  alerts: [asset("Alert", "Orders pipeline late", "alert:a1", { alert_id: "a1", state: "OK" })],
+  serving_endpoints: [asset("Serving Endpoint", "churn-endpoint", "serving:churn-endpoint", { state: "READY" })],
+  secret_scopes: [{ name: "kv-etl", keys: ["sql-password", "storage-key"] }, { name: "api-tokens", keys: ["crm-token"] }],
+  fabWorkspaces: [{ id: "6f1c2d3e-0000-4000-8000-000000000001", name: "Contoso Analytics", capacity_id: "cap-1" }, { id: "6f1c2d3e-0000-4000-8000-000000000002", name: "Contoso Sandbox", capacity_id: "cap-2" }],
+  lakehouses: [{ id: "lh-1", name: "lh_sales", schemas_enabled: true }, { id: "lh-2", name: "lh_legacy", schemas_enabled: false }],
+};
+const IDS = { notebooks: ["path", "notebooks"], workspace_files: ["id", "workspace_files"], jobs: ["job_id", "jobs"], pipelines: ["pipeline_id", "pipelines"],
+  repos: ["id", "repos"], clusters: ["cluster_id", "clusters"], libraries: ["meta.clusters", "clusters"], warehouses: ["id", "warehouses"],
+  external_locations: ["id", "external_locations"], connections: ["id", "connections"], queries: ["id", "queries"], dashboards: ["id", "dashboards"],
+  alerts: ["id", "alerts"], serving_endpoints: ["id", "serving_endpoints"], secret_scopes: ["name", "secret_scopes"] };
+const PATH_KEY = { "workspace-files": "workspace_files", "serving-endpoints": "serving_endpoints", "external-locations": "external_locations", "secret-scopes": "secret_scopes" };
+const TYPE_OF = { notebooks: "Notebook", jobs: "Job", clusters: "Cluster", pipelines: "DLT Pipeline", warehouses: "SQL Warehouse", tables: "Table/View",
+  secret_scopes: "Secret Scope", volumes: "Volume", functions: "Function", models: "ML Model", queries: "SQL Query", alerts: "Alert", dashboards: "Dashboard",
+  serving_endpoints: "Serving Endpoint", repos: "Repo", external_locations: "External Location", connections: "Connection", workspace_files: "Workspace File" };
+const OUTCOME_OF = { Notebook: "needs_testing", Job: "needs_testing", Cluster: "needs_testing", "Table/View": "migrated", Volume: "needs_testing", Function: "needs_testing",
+  "SQL Query": "needs_testing", "SQL Warehouse": "migrated", "Workspace File": "needs_testing", "External Location": "partial", "DLT Pipeline": "not_migrated",
+  "Secret Scope": "not_migrated", Alert: "not_migrated", Dashboard: "not_migrated", "ML Model": "not_migrated", "Serving Endpoint": "not_migrated",
+  Repo: "not_migrated", Connection: "not_migrated" };
+const NOTE_OF = { Notebook: "Cells converted (dbutils -> notebookutils, 3-part names -> lakehouse); run it once in Fabric",
+  Job: "Data pipeline with notebook activities and schedule", Cluster: "Fabric Environment created; libraries published", "Table/View": "Data copied and validated: row counts match",
+  Volume: "Files copied to lakehouse Files/", Function: "Spark temporary function in Migrated_Functions", "SQL Query": "Cell in Migrated_SQL_Queries",
+  "SQL Warehouse": "Fabric Warehouse created", "Workspace File": "Copied to Files/workspace_files", "External Location": "Create the ADLS connection and set adls_connection_id",
+  "DLT Pipeline": "No DLT in Fabric: redesign as notebooks + Materialized Lake Views (AI work order written)", "Secret Scope": "Create the secrets in Azure Key Vault (names exported)",
+  Alert: "Recreate in Fabric Activator", Dashboard: "Rebuild as a Power BI report", "ML Model": "Re-register in the Fabric MLflow registry",
+  "Serving Endpoint": "Host on Azure ML / AI Foundry", Repo: "Connect the repository with Fabric Git integration", Connection: "Create the Fabric connection; credentials are not exportable" };
+const demoJobs = {};
+function demoItems(job) {
+  const out = [];
+  for (const [k, ids] of Object.entries(job.req.source.selection || {})) {
+    for (const id of ids) {
+      const type = TYPE_OF[k] || k;
+      let name = id;
+      if (k === "jobs") name = (MOCK.jobs.find((j) => String(j.job_id) === id) || {}).name || "job " + id;
+      if (k === "clusters") name = (MOCK.clusters.find((c) => c.cluster_id === id) || {}).cluster_name || id;
+      if (k === "warehouses") name = (MOCK.warehouses.find((w) => w.id === id) || {}).name || id;
+      if (k === "notebooks") name = id.split("/").pop() || id;
+      let outcome = OUTCOME_OF[type] || "needs_testing";
+      if (!job.req.options.deploy && ["migrated"].includes(outcome)) outcome = "needs_testing";
+      out.push({ id: type + ":" + name, type, name, outcome, deployment: job.req.options.deploy ? (outcome === "not_migrated" ? "n/a" : "deployed") : "generated",
+        target_type: { Notebook: "Notebook", Job: "Data Pipeline", Cluster: "Environment", "Table/View": "Lakehouse" }[type] || "",
+        target_name: type === "Job" ? "pl_" + name : type === "Table/View" ? (job.req.target.lakehouse || "lh_" + id.split(".")[0]) : "",
+        reasons: [NOTE_OF[type] || "Generated"], actions: [] });
+    }
+  }
+  return out;
+}
+function demoSummary(items) {
+  const c = (o) => items.filter((i) => i.outcome === o).length;
+  return { total: items.length, migrated: c("migrated"), needs_testing: c("needs_testing"), partial: c("partial"), not_migrated: c("not_migrated"),
+    deployed: items.filter((i) => i.deployment === "deployed").length };
+}
+function demoJobState(job) {
+  const want = STAGES.filter((s) => (s !== "deploy" || job.req.options.deploy) && (s !== "copy_data" || job.req.options.copy_data));
+  const i = Math.floor((Date.now() - job.start) / 1500);
+  const done = job.cancelled ? false : i >= want.length;
+  const status = job.cancelled ? "cancelled" : done ? "succeeded" : i === 0 ? "queued" : "running";
+  const items = demoItems(job);
+  const tables = items.filter((x) => x.type === "Table/View").length;
+  return { id: job.id, status, mode: job.req.options.mode, source_kind: "databricks", stage: status === "running" ? want[Math.min(i, want.length - 1)] : null,
+    options: { deploy: job.req.options.deploy, copy_data: job.req.options.copy_data }, summary: done ? demoSummary(items) : null,
+    data_copy: done && job.req.options.copy_data ? { tables, copied: tables, failed: 0, files: { files: 12 } } : null, error: null };
+}
+async function mockApi(method, path, body) {
+  await sleep(250 + Math.random() * 450);
+  const p = path.split("?")[0], qs = new URLSearchParams(path.split("?")[1] || "");
+  const list = (items, key, idField) => ({ count: items.length, items, selection_key: key, id_field: idField, truncated: false, warnings: [] });
+  let m;
+  if (p === "/connections/databricks/test") {
+    const c = body.credentials || {};
+    return { ok: true, host: c.host, auth_type: c.client_id ? "service_principal" : "personal_access_token", user: c.client_id ? "sp-" + c.client_id : "demo.user@contoso.com" };
+  }
+  if (p === "/connections/fabric/test") return { ok: true, workspaces_visible: MOCK.fabWorkspaces.length };
+  if (p === "/databricks/catalogs") return list(MOCK.catalogs, null, null);
+  if ((m = p.match(/^\/databricks\/catalogs\/([^/]+)\/schemas$/))) {
+    const c = decodeURIComponent(m[1]);
+    return list((MOCK.schemas[c] || ["default"]).map((s) => ({ name: s, full_name: c + "." + s })), "tables", "full_name");
+  }
+  if ((m = p.match(/^\/databricks\/catalogs\/([^/]+)\/schemas\/([^/]+)\/(tables|volumes|functions|models)$/))) {
+    const [c, s, kind] = [decodeURIComponent(m[1]), decodeURIComponent(m[2]), m[3]];
+    return list(MOCK[kind](c, s), kind, kind === "tables" ? "full_name" : "id");
+  }
+  if ((m = p.match(/^\/databricks\/([a-z-]+)$/))) {
+    const key = PATH_KEY[m[1]] || m[1];
+    if (MOCK[key] && IDS[key]) return list(MOCK[key], IDS[key][1], IDS[key][0]);
+  }
+  if (p === "/fabric/workspaces") return list(MOCK.fabWorkspaces, null, null);
+  if (/^\/fabric\/workspaces\/[^/]+\/lakehouses$/.test(p)) return list(MOCK.lakehouses, null, null);
+  if (p === "/migrations" && method === "POST") {
+    const id = "mig_demo" + Math.random().toString(16).slice(2, 14);
+    demoJobs[id] = { id, start: Date.now(), req: body, cancelled: false };
+    return { id, status: "queued", links: { self: "/api/v1/migrations/" + id } };
+  }
+  if ((m = p.match(/^\/migrations\/([^/]+)$/))) return demoJobState(demoJobs[m[1]]);
+  if ((m = p.match(/^\/migrations\/([^/]+)\/items$/))) {
+    const items = demoItems(demoJobs[m[1]]);
+    const o = qs.get("outcome");
+    return { summary: demoSummary(items), items: o ? items.filter((i) => i.outcome === o) : items };
+  }
+  if ((m = p.match(/^\/migrations\/([^/]+)\/cancel$/))) { demoJobs[m[1]].cancelled = true; return demoJobState(demoJobs[m[1]]); }
+  throw new Error("404 — demo mode has no sample answer for " + method + " " + path);
+}
+function demoDownload(what) {
+  const items = demoItems(demoJobs[jobId]);
+  if (what === "report.csv") {
+    const esc = (v) => '"' + String(v ?? "").replaceAll('"', '""') + '"';
+    return new Blob([["type,name,outcome,deployment,notes", ...items.map((i) => [i.type, i.name, i.outcome, i.deployment, i.reasons[0]].map(esc).join(","))].join("\n")], { type: "text/csv" });
+  }
+  if (what === "report") {
+    const doc = document.implementation.createHTMLDocument("Demo migration report");
+    doc.body.append(el("h1", { text: "Demo migration report " + jobId }), el("p", { text: "Sample data: demo mode made no API calls." }));
+    const t = el("table", { border: "1", cellpadding: "4" }, el("tr", {}, ...["Type", "Name", "Outcome", "Notes"].map((h) => el("th", { text: h }))));
+    items.forEach((i) => t.append(el("tr", {}, ...[i.type, i.name, i.outcome, i.reasons[0]].map((v) => el("td", { text: v })))));
+    doc.body.append(t);
+    return new Blob(["<!doctype html>" + doc.documentElement.outerHTML], { type: "text/html" });
+  }
+  return new Blob(["Demo mode: the real service returns a zip with the converted notebooks, pipelines, reports and the runbook.\n"], { type: "text/plain" });
+}
+
 // ── API ──────────────────────────────────────────────────
 const api = {
   base() { return ($("apiBase").value.trim() || "").replace(/\/+$/, "") + "/api/v1"; },
@@ -454,6 +634,7 @@ const api = {
     return h;
   },
   async call(method, path, body) {
+    if (DEMO) return mockApi(method, path, body);
     let r;
     try {
       r = await fetch(api.base() + path, {
@@ -526,8 +707,14 @@ $("connectForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.currentTarget;
   form.querySelectorAll("input").forEach((i) => i.classList.add("touched"));
-  const bad = [...form.querySelectorAll("input")].find((i) => !i.closest("[hidden]") && !i.checkValidity());
-  if (bad) { bad.focus(); bad.reportValidity(); return; }
+  const visible = [...form.querySelectorAll("input")].filter((i) => !i.closest("[hidden]"));
+  const bad = DEMO ? visible.find((i) => i.required && !i.value.trim()) : visible.find((i) => !i.checkValidity());
+  if (bad) {
+    bad.focus();
+    if (DEMO) { bad.setCustomValidity("Type any value (demo mode)"); bad.reportValidity(); bad.addEventListener("input", () => bad.setCustomValidity(""), { once: true }); }
+    else bad.reportValidity();
+    return;
+  }
   const btn = $("connectBtn");
   btn.disabled = true;
   setStatus("dbxStatus", "info", "Connecting to Databricks…", true);
@@ -847,7 +1034,7 @@ function buildRequest() {
     if (typeof mapping !== "object" || Array.isArray(mapping) || mapping === null) throw new Error("Mapping overrides must be a JSON object.");
   }
   if (!$("fabWorkspace").value) throw new Error("Choose the Fabric workspace.");
-  if ($("fabLakehouseSel").value === NEW_LH && !$("fabLakehouseNew").checkValidity())
+  if ($("fabLakehouseSel").value === NEW_LH && !(DEMO ? $("fabLakehouseNew").value.trim() : $("fabLakehouseNew").checkValidity()))
     throw new Error("New lakehouse name: start with a letter; letters, digits and _ only.");
   const selection = {};
   SELECTION_KEYS.forEach((k) => { if (sel[k].size) selection[k] = [...sel[k]]; });
@@ -969,15 +1156,39 @@ document.querySelectorAll("[data-dl]").forEach((b) => b.addEventListener("click"
   // fetch with the API key header, then hand the file to the browser
   const what = b.dataset.dl;
   try {
-    const r = await fetch(api.base() + "/migrations/" + jobId + "/" + what, { headers: api.headers(false) });
-    if (!r.ok) throw new Error(r.status + " " + (await r.text()).slice(0, 200));
-    const url = URL.createObjectURL(await r.blob());
+    let blob;
+    if (DEMO) blob = demoDownload(what);
+    else {
+      const r = await fetch(api.base() + "/migrations/" + jobId + "/" + what, { headers: api.headers(false) });
+      if (!r.ok) throw new Error(r.status + " " + (await r.text()).slice(0, 200));
+      blob = await r.blob();
+    }
+    const url = URL.createObjectURL(blob);
     if (what === "report") window.open(url, "_blank", "noopener");
-    else el("a", { href: url, download: jobId + (what === "download" ? ".zip" : "_report.csv") }).click();
+    else el("a", { href: url, download: jobId + (what === "download" ? (DEMO ? "_demo.txt" : ".zip") : "_report.csv") }).click();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (e) { setStatus("jobMsg", "err", "Download: " + e.message); }
 }));
 $("newMigration").addEventListener("click", () => { clearTimeout(pollTimer); unlocked.delete(5); unlocked.delete(4); go(2); });
+
+// mode switch: checked = Live
+$("modeSwitch").checked = !DEMO;
+$("modeLabel").textContent = DEMO ? "Demo mode" : "Live mode";
+$("demoBanner").hidden = !DEMO;
+$("modeSwitch").addEventListener("change", () => {
+  const live = $("modeSwitch").checked;
+  store.set("mode", live ? "live" : "demo");
+  const u = new URL(location.href);
+  u.searchParams.set("mode", live ? "live" : "demo");
+  location.href = u.toString();  // start over: lists and connections belong to one mode
+});
+if (DEMO) {
+  // any text is accepted in demo mode: no URL/pattern checks, so nothing turns red
+  ["apiBase", "dbxHost"].forEach((id) => { $(id).type = "text"; });
+  $("fabLakehouseNew").removeAttribute("pattern");
+  $("apiBase").placeholder = "(not used in demo mode)";
+  $("dbxHost").placeholder = "any value, e.g. https://adb-123.azuredatabricks.net";
+}
 
 Object.keys(PICKERS).forEach(renderPicker);
 syncWhole();

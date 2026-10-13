@@ -26,7 +26,9 @@ curl -F "files=@my_notebook.ipynb" -F 'config={}' http://localhost:9093/api/v1/m
 
 **Prefer a browser?** Open <http://localhost:9093/ui>: a step-by-step form that tests the Databricks and
 Fabric credentials (both required), loads every Databricks object list, lets you tick what to migrate,
-pick the Fabric workspace and lakehouse, and then runs and follows the migration.
+pick the Fabric workspace and lakehouse, and then runs and follows the migration. It opens in **demo mode**
+(any values work, everything is simulated with sample data, no API call is made; the page even works
+opened straight from disk); flip the header switch to **Live** (or open `/ui?mode=live`) to call the API.
 
 Then follow the job at `GET /api/v1/migrations/{id}`. When it finishes, open `/report` or
 download everything from `/download`.
